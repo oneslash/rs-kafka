@@ -6,33 +6,36 @@
 # run all cargo tests, including integration tests, for each Kafka version specified.
 # For example, running:
 #
-# ./run-all-tests 0.8.2.2:0.9.0.0
+# ./run-all-tests 3.8.1:3.9.1
 #
-# will run the tests against Kafka versions 0.8.2.2 and 0.9.0.0. The arguments
-# should correspond to a Docker tag of the `wurstmeister/kafka` image, so any valid
-# tag will do—i.e.,
+# will run the tests against Kafka versions 3.8.1 and 3.9.1. The arguments
+# should correspond to a Docker tag of the `apache/kafka` image, so any valid
+# tag will do.
 #
-# ./run-all-tests latest
-#
-# will run against the most recent Kafka version published in the
-# `wurstmeister/kafka` repo. If there are no versions specified, it runs the tests
-# on a set of default versions.
+# If there are no versions specified, it runs the tests on a default matrix.
 
 set -e 
 
 stop_docker() {
-  docker compose down
+  docker compose down -v
 }
 
 start_docker() {
-  # pull zookeeper and build the kafka image
-  docker compose pull
-  docker compose build kafka
-  docker compose up -d zookeeper kafka
+  docker compose pull kafka
+  docker compose up -d kafka
 
-  # wait for Kafka to be ready and the test topic to be created
-  ./do_until_success "docker compose logs kafka | grep 'Created topic kafka-rust-test'"
-  ./do_until_success "docker compose logs kafka | grep 'Created topic kafka-rust-test2'"
+  KAFKA_BIN="$(docker compose exec -T kafka sh -lc 'if [ -x /opt/kafka/bin/kafka-topics.sh ]; then echo /opt/kafka/bin; elif [ -x /kafka/bin/kafka-topics.sh ]; then echo /kafka/bin; else echo ""; fi')"
+  if [[ -z "${KAFKA_BIN}" ]]; then
+    echo >&2 "Could not find kafka scripts in container (expected /opt/kafka/bin or /kafka/bin)"
+    exit 1
+  fi
+
+  # wait for Kafka to be ready
+  ./do_until_success "docker compose exec -T kafka ${KAFKA_BIN}/kafka-broker-api-versions.sh --bootstrap-server kafka:19092 >/dev/null 2>&1"
+
+  # create test topics (idempotent)
+  docker compose exec -T kafka ${KAFKA_BIN}/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic kafka-rust-test --partitions 2 --replication-factor 1
+  docker compose exec -T kafka ${KAFKA_BIN}/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic kafka-rust-test2 --partitions 2 --replication-factor 1
 }
 
 setup() {
@@ -57,21 +60,9 @@ teardown() {
 
 # need to run tests serially to avoid the tests stepping on each others' toes
 export RUST_TEST_THREADS=1
-DEFAULT_VERS='3.4.0:3.5.0:3.6.0:3.7.0:3.8.0'
-DEFAULT_COMPRESSIONS='NONE:SNAPPY:GZIP'
-DEFAULT_SECURES=':secure'
-
-declare SCALA_VERS_3_4_0='2.13'
-declare SCALA_VERS_3_5_0='2.13'
-declare SCALA_VERS_3_6_0='2.13'
-declare SCALA_VERS_3_7_0='2.13'
-declare SCALA_VERS_3_8_0='2.13'
-
-scala_version_for_kafka() {
-    local kv=$(echo $1 | sed 's/\./_/g')
-    local sv="SCALA_VERS_${kv}"
-    printf '%s' "${!sv}"
-}
+DEFAULT_VERS='3.8.1:3.9.1:4.0.1:4.1.0'
+DEFAULT_COMPRESSIONS='NONE'
+DEFAULT_SECURES=':'
 
 vers=$@
 
@@ -100,22 +91,15 @@ IFS=':'
 for ver in $vers; do
   for compression in $COMPRESSIONS; do
     for secure in $SECURES; do
-      if [[ ! -z "$secure" ]] && echo $ver | grep '^0.8'; then
-        echo "Skipping secure test for 0.8 -- unsupported"
-        continue
-      fi
-
       export KAFKA_VER=$ver
       export KAFKA_CLIENT_COMPRESSION=$compression
       export KAFKA_CLIENT_SECURE=$secure
-      export SCALA_VER=$(scala_version_for_kafka "${ver}")
-      if [ "x$SCALA_VER" = "x" ] ; then
-          echo >&2 "Unknown Scala version for Kafka $KAFKA_VER"
-          exit 1
+      if [[ -n "${secure}" ]]; then
+        echo "Skipping SECURES=${secure} (tests/docker-compose.yml currently runs PLAINTEXT only)"
+        continue
       fi
 
       echo -n "Running tests with KAFKA_VER=$KAFKA_VER, "
-      echo -n "SCALA_VER=$SCALA_VER, "
       echo -n "KAFKA_CLIENT_COMPRESSION=$compression, "
       echo "KAFKA_CLIENT_SECURE=$secure"
 

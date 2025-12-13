@@ -9,8 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_TEST_THREADS: 1
-  DOCKER_HUB_USER: ${{ secrets.DOCKER_HUB_USER }}
-  DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
 
 jobs:
   test:
@@ -18,46 +16,20 @@ jobs:
     strategy:
       matrix:
         include:
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: NONE
-            SECURES: ""
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: NONE
-            SECURES: secure
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: SNAPPY
-            SECURES: ""
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: SNAPPY
-            SECURES: secure
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: GZIP
-            SECURES: ""
-          - KAFKA_VER: 3.4.0
-            COMPRESSIONS: GZIP
-            SECURES: secure
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: NONE
-            SECURES: ""
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: NONE
-            SECURES: secure
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: SNAPPY
-            SECURES: ""
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: SNAPPY
-            SECURES: secure
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: GZIP
-            SECURES: ""
-          - KAFKA_VER: 3.8.0
-            COMPRESSIONS: GZIP
-            SECURES: secure
+          - KAFKA_VER: 3.8.1
+            COMPRESSION: NONE
+          - KAFKA_VER: 3.9.1
+            COMPRESSION: NONE
+          - KAFKA_VER: 4.0.1
+            COMPRESSION: NONE
+          - KAFKA_VER: 4.1.0
+            COMPRESSION: NONE
+          - KAFKA_VER: 4.1.0
+            COMPRESSION: GZIP
+          - KAFKA_VER: 4.1.0
+            COMPRESSION: SNAPPY
     steps:
     - uses: actions/checkout@v4
-    - name: Login to Docker Hub
-      run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USER }}" --password-stdin
 
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
@@ -65,18 +37,113 @@ jobs:
         profile: minimal
         toolchain: stable
 
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Cache Kafka distribution
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/apache-kafka/${{ matrix.KAFKA_VER }}
+        key: apache-kafka-${{ runner.os }}-${{ matrix.KAFKA_VER }}
+
     - name: Build
       run: cargo build
-      
-    - name: Make the test script executable
-      run: chmod +x ./tests/run-all-tests
+
+    - name: Download Kafka (if needed)
+      run: |
+        set -euo pipefail
+
+        KAFKA_VER="${{ matrix.KAFKA_VER }}"
+        KAFKA_HOME="$HOME/.cache/apache-kafka/$KAFKA_VER"
+        if [[ -d "$KAFKA_HOME" ]]; then
+          echo "Using cached Kafka at $KAFKA_HOME"
+        else
+          mkdir -p "$HOME/.cache/apache-kafka"
+          curl -fsSL "https://archive.apache.org/dist/kafka/${KAFKA_VER}/kafka_2.13-${KAFKA_VER}.tgz" | tar xz -C "$HOME/.cache/apache-kafka"
+          mv "$HOME/.cache/apache-kafka/kafka_2.13-${KAFKA_VER}" "$KAFKA_HOME"
+        fi
+
+        echo "KAFKA_HOME=$KAFKA_HOME" >> "$GITHUB_ENV"
+
+    - name: Start Kafka (KRaft, no Docker)
+      run: |
+        set -euo pipefail
+
+        DATA_DIR="$RUNNER_TEMP/kafka-data-${{ matrix.KAFKA_VER }}"
+        LOG_DIR="$DATA_DIR/logs"
+        CONF="$RUNNER_TEMP/kafka-kraft.properties"
+        LOG_FILE="$RUNNER_TEMP/kafka.log"
+        PID_FILE="$RUNNER_TEMP/kafka.pid"
+
+        rm -rf "$DATA_DIR"
+        mkdir -p "$LOG_DIR"
+
+        cat > "$CONF" <<EOF
+        process.roles=broker,controller
+        node.id=1
+        controller.quorum.voters=1@127.0.0.1:9093
+        controller.listener.names=CONTROLLER
+        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+        listeners=PLAINTEXT://127.0.0.1:9092,CONTROLLER://127.0.0.1:9093
+        advertised.listeners=PLAINTEXT://127.0.0.1:9092
+        inter.broker.listener.name=PLAINTEXT
+
+        log.dirs=$LOG_DIR
+
+        offsets.topic.replication.factor=1
+        transaction.state.log.replication.factor=1
+        transaction.state.log.min.isr=1
+        group.initial.rebalance.delay.ms=0
+        EOF
+
+        CLUSTER_ID="$("$KAFKA_HOME/bin/kafka-storage.sh" random-uuid)"
+        "$KAFKA_HOME/bin/kafka-storage.sh" format -t "$CLUSTER_ID" -c "$CONF" --ignore-formatted
+
+        "$KAFKA_HOME/bin/kafka-server-start.sh" "$CONF" >"$LOG_FILE" 2>&1 &
+        echo "$!" > "$PID_FILE"
+
+        for i in {1..60}; do
+          if "$KAFKA_HOME/bin/kafka-broker-api-versions.sh" --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+
+        if ! "$KAFKA_HOME/bin/kafka-broker-api-versions.sh" --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1; then
+          echo >&2 "Kafka failed to start"
+          tail -n 200 "$LOG_FILE" || true
+          exit 1
+        fi
+
+        "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server 127.0.0.1:9092 --create --if-not-exists --topic kafka-rust-test --partitions 2 --replication-factor 1
+        "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server 127.0.0.1:9092 --create --if-not-exists --topic kafka-rust-test2 --partitions 2 --replication-factor 1
 
     - name: Run tests
-      run: ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
+      run: cargo test --features integration_tests
       env:
-        KAFKA_VER: ${{ matrix.KAFKA_VER }}
-        COMPRESSIONS: ${{ matrix.COMPRESSIONS }}
-        SECURES: ${{ matrix.SECURES }}
+        KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
+
+    - name: Show Kafka logs (on failure)
+      if: failure()
+      run: tail -n 200 "$RUNNER_TEMP/kafka.log" || true
+
+    - name: Stop Kafka
+      if: always()
+      run: |
+        set +e
+        PID_FILE="$RUNNER_TEMP/kafka.pid"
+        if [[ -f "$PID_FILE" ]]; then
+          PID="$(cat "$PID_FILE")"
+          kill "$PID" 2>/dev/null || true
+          for _ in {1..30}; do
+            kill -0 "$PID" 2>/dev/null || exit 0
+            sleep 1
+          done
+          kill -9 "$PID" 2>/dev/null || true
+        fi
 
     - name: Generate documentation
       run: cargo doc

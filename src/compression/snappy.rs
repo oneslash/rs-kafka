@@ -13,6 +13,22 @@ pub fn compress(src: &[u8]) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Produces an xerial-snappy framed stream (as produced by
+/// `org.xerial.snappy.SnappyOutputStream`), containing the given data as a
+/// single chunk.
+pub fn compress_xerial(src: &[u8]) -> Result<Vec<u8>> {
+    let compressed = compress(src)?;
+    let chunk_len = i32::try_from(compressed.len()).map_err(|_| Error::CodecError)?;
+
+    let mut out = Vec::with_capacity(MAGIC.len() + 8 + 4 + compressed.len());
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&1i32.to_be_bytes()); // version
+    out.extend_from_slice(&1i32.to_be_bytes()); // compat
+    out.extend_from_slice(&chunk_len.to_be_bytes());
+    out.extend_from_slice(&compressed);
+    Ok(out)
+}
+
 fn uncompress_to(src: &[u8], dst: &mut Vec<u8>) -> Result<()> {
     let min_len = snap::raw::decompress_len(src)?;
     if min_len > 0 {
@@ -240,11 +256,10 @@ mod tests {
         ];
         let uncompressed = uncompress(compressed);
         assert!(uncompressed.is_err());
-        assert!(if let Some(Error::InvalidSnappy(_)) = uncompressed.err() {
-            true
-        } else {
-            false
-        });
+        assert!(matches!(
+            uncompressed.err(),
+            Some(Error::InvalidSnappy(_))
+        ));
     }
 
     static ORIGINAL: &str = include_str!("../../test-data/fetch1.txt");

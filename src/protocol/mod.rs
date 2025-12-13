@@ -1,5 +1,4 @@
 use std::io::{Read, Write};
-use std::mem;
 use std::time::Duration;
 
 use crate::codecs::{FromByte, ToByte};
@@ -16,11 +15,12 @@ macro_rules! try_multi {
 
 pub mod consumer;
 pub mod metadata;
-pub mod offset;
 pub mod produce;
 pub mod list_offset;
 
 pub mod fetch;
+pub mod api_versions;
+pub mod records;
 mod zreader;
 
 // ~ convenient re-exports for request/response types defined in the
@@ -30,8 +30,9 @@ pub use self::consumer::{
     OffsetCommitVersion, OffsetFetchRequest, OffsetFetchResponse, OffsetFetchVersion,
 };
 pub use self::fetch::FetchRequest;
+#[allow(unused_imports)]
+pub use self::api_versions::{ApiVersionRange, ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions};
 pub use self::metadata::{MetadataRequest, MetadataResponse};
-pub use self::offset::{OffsetRequest, OffsetResponse};
 pub use self::produce::{ProduceRequest, ProduceResponse};
 pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 
@@ -45,6 +46,7 @@ const API_KEY_METADATA: i16 = 3;
 const API_KEY_OFFSET_COMMIT: i16 = 8;
 const API_KEY_OFFSET_FETCH: i16 = 9;
 const API_KEY_GROUP_COORDINATOR: i16 = 10;
+const API_KEY_API_VERSIONS: i16 = 18;
 
 // the default version of Kafka API we are requesting
 const API_VERSION: i16 = 0;
@@ -62,13 +64,46 @@ pub trait ResponseParser {
 
 impl KafkaCode {
     fn from_protocol(n: i16) -> Option<KafkaCode> {
-        if n == 0 {
-            return None;
+        match n {
+            0 => None,
+            -1 => Some(KafkaCode::Unknown),
+            1 => Some(KafkaCode::OffsetOutOfRange),
+            2 => Some(KafkaCode::CorruptMessage),
+            3 => Some(KafkaCode::UnknownTopicOrPartition),
+            4 => Some(KafkaCode::InvalidMessageSize),
+            5 => Some(KafkaCode::LeaderNotAvailable),
+            6 => Some(KafkaCode::NotLeaderForPartition),
+            7 => Some(KafkaCode::RequestTimedOut),
+            8 => Some(KafkaCode::BrokerNotAvailable),
+            9 => Some(KafkaCode::ReplicaNotAvailable),
+            10 => Some(KafkaCode::MessageSizeTooLarge),
+            11 => Some(KafkaCode::StaleControllerEpoch),
+            12 => Some(KafkaCode::OffsetMetadataTooLarge),
+            13 => Some(KafkaCode::NetworkException),
+            14 => Some(KafkaCode::GroupLoadInProgress),
+            15 => Some(KafkaCode::GroupCoordinatorNotAvailable),
+            16 => Some(KafkaCode::NotCoordinatorForGroup),
+            17 => Some(KafkaCode::InvalidTopic),
+            18 => Some(KafkaCode::RecordListTooLarge),
+            19 => Some(KafkaCode::NotEnoughReplicas),
+            20 => Some(KafkaCode::NotEnoughReplicasAfterAppend),
+            21 => Some(KafkaCode::InvalidRequiredAcks),
+            22 => Some(KafkaCode::IllegalGeneration),
+            23 => Some(KafkaCode::InconsistentGroupProtocol),
+            24 => Some(KafkaCode::InvalidGroupId),
+            25 => Some(KafkaCode::UnknownMemberId),
+            26 => Some(KafkaCode::InvalidSessionTimeout),
+            27 => Some(KafkaCode::RebalanceInProgress),
+            28 => Some(KafkaCode::InvalidCommitOffsetSize),
+            29 => Some(KafkaCode::TopicAuthorizationFailed),
+            30 => Some(KafkaCode::GroupAuthorizationFailed),
+            31 => Some(KafkaCode::ClusterAuthorizationFailed),
+            32 => Some(KafkaCode::InvalidTimestamp),
+            33 => Some(KafkaCode::UnsupportedSaslMechanism),
+            34 => Some(KafkaCode::IllegalSaslState),
+            35 => Some(KafkaCode::UnsupportedVersion),
+            _ => Some(KafkaCode::Unknown),
         }
-        if n >= KafkaCode::OffsetOutOfRange as i16 && n <= KafkaCode::UnsupportedVersion as i16 {
-            return Some(unsafe { mem::transmute(n as i8) });
-        }
-        Some(KafkaCode::Unknown)
     }
 }
 

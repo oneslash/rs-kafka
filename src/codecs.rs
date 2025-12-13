@@ -12,7 +12,7 @@ macro_rules! try_usize_to_int {
     // ~ $ttype should actually be a 'ty' ... but rust complains for
     // some reason :/
     ($value:expr, $ttype:ident) => {{
-        let maxv = $ttype::max_value();
+        let maxv = $ttype::MAX;
         let x: usize = $value;
         if (x as u64) <= (maxv as u64) {
             x as $ttype
@@ -68,7 +68,7 @@ impl ToByte for str {
 fn test_string_too_long() {
     use std::str;
 
-    let s = vec![b'a'; i16::max_value() as usize + 1];
+    let s = vec![b'a'; i16::MAX as usize + 1];
     let s = unsafe { str::from_utf8_unchecked(&s) };
     let mut buf = Vec::new();
     assert!(s.encode(&mut buf).is_err());
@@ -137,7 +137,7 @@ macro_rules! dec_helper {
                 *$dest = val;
                 Ok(())
             }
-            Err(e) => Err(From::from(e)),
+            Err(e) => Err(Error::from(e)),
         }
     }};
 }
@@ -185,9 +185,7 @@ impl FromByte for String {
     type R = String;
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         let mut length: i16 = 0;
-        if let Err(e) = decode!(buffer, read_i16, &mut length) {
-            return Err(e);
-        }
+        decode!(buffer, read_i16, &mut length)?;
         if length <= 0 {
             return Ok(());
         }
@@ -205,9 +203,7 @@ impl<V: FromByte + Default> FromByte for Vec<V> {
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         let mut length: i32 = 0;
-        if let Err(e) = decode!(buffer, read_i32, &mut length) {
-            return Err(e);
-        }
+        decode!(buffer, read_i32, &mut length)?;
         if length <= 0 {
             return Ok(());
         }
@@ -226,10 +222,7 @@ impl FromByte for Vec<u8> {
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         let mut length: i32 = 0;
-        match decode!(buffer, read_i32, &mut length) {
-            Ok(()) => {}
-            Err(e) => return Err(e),
-        }
+        decode!(buffer, read_i32, &mut length)?;
         if length <= 0 {
             return Ok(());
         }

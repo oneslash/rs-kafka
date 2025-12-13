@@ -120,12 +120,12 @@ impl AsBytes for Vec<u8> {
     }
 }
 
-impl<'a> AsBytes for &'a [u8] {
+impl AsBytes for &[u8] {
     fn as_bytes(&self) -> &[u8] {
         self
     }
 }
-impl<'a> AsBytes for &'a str {
+impl AsBytes for &str {
     fn as_bytes(&self) -> &[u8] {
         str::as_bytes(self)
     }
@@ -610,23 +610,23 @@ pub type DefaultHasher = XxHash32;
 /// For every message it proceeds as follows:
 ///
 /// - If the messages contains a non-negative partition value it
-/// leaves the message untouched.  This will cause `Producer` to try
-/// to send the message to exactly that partition to.
+///   leaves the message untouched.  This will cause `Producer` to try
+///   to send the message to exactly that partition to.
 ///
 /// - Otherwise, if the message has an "unspecified" `partition` -
-/// this is, it has a negative partition value - and a specified key,
-/// `DefaultPartitioner` will compute a hash from the key using the
-/// underlying hasher and take `hash % num_all_partitions` to derive
-/// the partition to send the message to.  This will consistently
-/// cause messages with the same key to be sent to the same partition.
+///   this is, it has a negative partition value - and a specified key,
+///   `DefaultPartitioner` will compute a hash from the key using the
+///   underlying hasher and take `hash % num_all_partitions` to derive
+///   the partition to send the message to.  This will consistently
+///   cause messages with the same key to be sent to the same partition.
 ///
 /// - Otherwise - a message with an "unspecified" `partition` and no
-/// key - `DefaultPartitioner` will "randomly" pick one from the
-/// "available" partitions trying to distribute the messages across
-/// the multiple partitions.  In particular, it tries to distribute
-/// such messages across the "available" partitions in a round robin
-/// fashion.  "Available" it this context means partitions with a
-/// known leader.
+///   key - `DefaultPartitioner` will "randomly" pick one from the
+///   "available" partitions trying to distribute the messages across
+///   the multiple partitions.  In particular, it tries to distribute
+///   such messages across the "available" partitions in a round robin
+///   fashion.  "Available" it this context means partitions with a
+///   known leader.
 ///
 /// This behavior may not suffice every workload.  If your application
 /// is dependent on a particular distribution scheme different from

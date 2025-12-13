@@ -19,6 +19,7 @@ use crate::error::KafkaCode;
 use crate::{Error, Result};
 
 use super::to_crc;
+use super::records::{decode_uncompressed_record_set, decompress_record_set, record_set_has_compressed_batches};
 use super::zreader::ZReader;
 use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
 
@@ -30,6 +31,8 @@ pub struct FetchRequest<'a, 'b> {
     pub replica: i32,
     pub max_wait_time: i32,
     pub min_bytes: i32,
+    pub max_bytes: i32,
+    pub isolation_level: i8,
     // topic -> partitions
     pub topic_partitions: HashMap<&'b str, TopicPartitionFetchRequest>,
 }
@@ -58,6 +61,26 @@ impl<'a, 'b> FetchRequest<'a, 'b> {
             replica: -1,
             max_wait_time,
             min_bytes,
+            max_bytes: i32::MAX,
+            isolation_level: 0,
+            topic_partitions: HashMap::new(),
+        }
+    }
+
+    pub fn new_v4(
+        correlation_id: i32,
+        client_id: &'a str,
+        max_wait_time: i32,
+        min_bytes: i32,
+        max_bytes: i32,
+    ) -> FetchRequest<'a, 'b> {
+        FetchRequest {
+            header: HeaderRequest::new(API_KEY_FETCH, 4, correlation_id, client_id),
+            replica: -1,
+            max_wait_time,
+            min_bytes,
+            max_bytes,
+            isolation_level: 0,
             topic_partitions: HashMap::new(),
         }
     }
@@ -103,6 +126,10 @@ impl<'a, 'b> ToByte for FetchRequest<'a, 'b> {
         self.replica.encode(buffer)?;
         self.max_wait_time.encode(buffer)?;
         self.min_bytes.encode(buffer)?;
+        if self.header.api_version >= 4 {
+            self.max_bytes.encode(buffer)?;
+            self.isolation_level.encode(buffer)?;
+        }
         // encode the hashmap as a vector
         (self.topic_partitions.len() as i32).encode(buffer)?;
         for (name, tp) in &self.topic_partitions {
@@ -188,10 +215,16 @@ impl Response {
         reqs: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
     ) -> Result<Response> {
-        let slice = unsafe { mem::transmute(&response[..]) };
+        let slice: &'static [u8] =
+            unsafe { mem::transmute::<&[u8], &'static [u8]>(&response[..]) };
         let mut r = ZReader::new(slice);
         let correlation_id = r.read_i32()?;
-        let topics = array_of!(r, Topic::read(&mut r, reqs, validate_crc));
+        let api_version = reqs.map_or(0, |req| req.header.api_version);
+        if api_version >= 4 {
+            // throttle_time_ms
+            let _ = r.read_i32()?;
+        }
+        let topics = array_of!(r, Topic::read(&mut r, reqs, validate_crc, api_version));
         Ok(Response {
             raw_data: response,
             correlation_id,
@@ -231,10 +264,11 @@ impl<'a> Topic<'a> {
         r: &mut ZReader<'a>,
         reqs: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
+        api_version: i16,
     ) -> Result<Topic<'a>> {
         let name = r.read_str()?;
         let preqs = reqs.and_then(|reqs| reqs.get(name));
-        let partitions = array_of!(r, Partition::read(r, preqs, validate_crc));
+        let partitions = array_of!(r, Partition::read(r, preqs, validate_crc, api_version));
         Ok(Topic {
             topic: name,
             partitions,
@@ -278,6 +312,7 @@ impl<'a> Partition<'a> {
         r: &mut ZReader<'a>,
         preqs: Option<&TopicPartitionFetchRequest>,
         validate_crc: bool,
+        api_version: i16,
     ) -> Result<Partition<'a>> {
         let partition = r.read_i32()?;
         let proffs = preqs
@@ -288,7 +323,21 @@ impl<'a> Partition<'a> {
         // we need to parse the rest even if there was an error to
         // consume the input stream (zreader)
         let highwatermark = r.read_i64()?;
-        let msgset = MessageSet::from_slice(r.read_bytes()?, proffs, validate_crc)?;
+        let msgset = if api_version >= 4 {
+            // last_stable_offset
+            let _ = r.read_i64()?;
+            // aborted_transactions
+            let aborted_len = r.read_array_len()?;
+            for _ in 0..aborted_len {
+                // producer_id, first_offset
+                let _ = r.read_i64()?;
+                let _ = r.read_i64()?;
+            }
+            let record_set = r.read_bytes()?;
+            MessageSet::from_record_set_slice(record_set, proffs, validate_crc)?
+        } else {
+            MessageSet::from_slice(r.read_bytes()?, proffs, validate_crc)?
+        };
 
         Ok(Partition {
             partition,
@@ -376,15 +425,16 @@ impl<'a> MessageSet<'a> {
         // further modifying it and providing
         // publicly no mutability possibilities
         // this is safe
+        let slice: &'a [u8] = unsafe { mem::transmute::<&[u8], &'a [u8]>(&data[..]) };
         let ms = MessageSet::from_slice(
-            unsafe { mem::transmute(&data[..]) },
+            slice,
             req_offset,
             validate_crc,
         )?;
-        return Ok(MessageSet {
+        Ok(MessageSet {
             raw_data: Cow::Owned(data),
             messages: ms.messages,
-        });
+        })
     }
 
     fn from_slice(raw_data: &[u8], req_offset: i64, validate_crc: bool) -> Result<MessageSet<'_>> {
@@ -436,6 +486,33 @@ impl<'a> MessageSet<'a> {
         }
         Ok(MessageSet {
             raw_data: Cow::Borrowed(raw_data),
+            messages: msgs,
+        })
+    }
+
+    fn from_record_set_slice(
+        raw_data: &'a [u8],
+        req_offset: i64,
+        validate_crc: bool,
+    ) -> Result<MessageSet<'a>> {
+        let (raw_data_cow, records) = if record_set_has_compressed_batches(raw_data)? {
+            let data = decompress_record_set(raw_data, validate_crc)?;
+            let slice: &'a [u8] = unsafe { mem::transmute::<&[u8], &'a [u8]>(&data[..]) };
+            (Cow::Owned(data), slice)
+        } else {
+            (Cow::Borrowed(raw_data), raw_data)
+        };
+
+        let mut msgs = Vec::new();
+        for rm in decode_uncompressed_record_set(records, req_offset, validate_crc)? {
+            msgs.push(Message {
+                offset: rm.offset,
+                key: rm.key,
+                value: rm.value,
+            });
+        }
+        Ok(MessageSet {
+            raw_data: raw_data_cow,
             messages: msgs,
         })
     }

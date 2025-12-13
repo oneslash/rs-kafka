@@ -2,16 +2,19 @@ use std::io::{Read, Write};
 
 use crate::codecs::{FromByte, ToByte};
 #[cfg(feature = "gzip")]
+#[allow(unused_imports)]
 use crate::compression::gzip;
 #[cfg(feature = "snappy")]
+#[allow(unused_imports)]
 use crate::compression::snappy;
 use crate::compression::Compression;
 
 use crate::error::{KafkaCode, Result};
 
 use super::to_crc;
+use super::records::encode_record_batch;
 use super::{HeaderRequest, HeaderResponse};
-use super::{API_KEY_PRODUCE, API_VERSION};
+use super::API_KEY_PRODUCE;
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
 /// The magic byte (a.k.a version) we use for sent messages.
@@ -24,9 +27,21 @@ const MESSAGE_MAGIC_BYTE: i8 = 0;
 // See https://kafka.apache.org/documentation/#messageset
 const MESSAGE_MAGIC_BYTE_WITH_TIMESTAMP: i8 = 1;
 
+const PRODUCE_API_VERSION: i16 = 4;
+
+impl ToByte for Option<&str> {
+    fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
+        match *self {
+            Some(s) => s.encode(buffer),
+            None => (-1i16).encode(buffer),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ProduceRequest<'a, 'b> {
     pub header: HeaderRequest<'a>,
+    pub transactional_id: Option<&'a str>,
     pub required_acks: i16,
     pub timeout: i32,
     pub topic_partitions: Vec<TopicPartitionProduceRequest<'b>>,
@@ -73,7 +88,8 @@ impl<'a, 'b> ProduceRequest<'a, 'b> {
         #[cfg(feature = "producer_timestamp")] timestamp: Option<ProducerTimestamp>,
     ) -> ProduceRequest<'a, 'b> {
         ProduceRequest {
-            header: HeaderRequest::new(API_KEY_PRODUCE, API_VERSION, correlation_id, client_id),
+            header: HeaderRequest::new(API_KEY_PRODUCE, PRODUCE_API_VERSION, correlation_id, client_id),
+            transactional_id: None,
             required_acks,
             timeout,
             topic_partitions: vec![],
@@ -156,6 +172,7 @@ impl<'a, 'b> ToByte for ProduceRequest<'a, 'b> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
+            self.transactional_id.encode(buffer),
             self.required_acks.encode(buffer),
             self.timeout.encode(buffer),
             self.topic_partitions.encode(buffer)
@@ -194,27 +211,12 @@ impl<'a> PartitionProduceRequest<'a> {
     fn _encode<W: Write>(&self, out: &mut W, compression: Compression) -> Result<()> {
         self.partition.encode(out)?;
 
-        // ~ render the whole MessageSet first to a temporary buffer
-        let mut buf = Vec::new();
+        let mut msgs = Vec::with_capacity(self.messages.len());
         for msg in &self.messages {
-            msg._encode_to_buf(&mut buf, MESSAGE_MAGIC_BYTE, 0)?;
+            msgs.push((msg.key, msg.value));
         }
-        match compression {
-            Compression::NONE => {
-                // ~ nothing to do
-            }
-            #[cfg(feature = "gzip")]
-            Compression::GZIP => {
-                let cdata = gzip::compress(&buf)?;
-                render_compressed(&mut buf, &cdata, compression)?;
-            }
-            #[cfg(feature = "snappy")]
-            Compression::SNAPPY => {
-                let cdata = snappy::compress(&buf)?;
-                render_compressed(&mut buf, &cdata, compression)?;
-            }
-        }
-        buf.encode(out)
+        let batch = encode_record_batch(&msgs, compression)?;
+        batch.encode(out)
     }
 
     #[cfg(feature = "producer_timestamp")]
@@ -224,35 +226,8 @@ impl<'a> PartitionProduceRequest<'a> {
         compression: Compression,
         timestamp: ProducerTimestamp,
     ) -> Result<()> {
-        self.partition.encode(out)?;
-
-        // ~ render the whole MessageSet first to a temporary buffer
-        let mut buf = Vec::new();
-        for msg in &self.messages {
-            let now = chrono::Utc::now().timestamp_millis(); // ~ get current timestamp
-            msg._encode_to_buf_with_timestamp(
-                &mut buf,
-                MESSAGE_MAGIC_BYTE_WITH_TIMESTAMP,
-                timestamp as i8,
-                now,
-            )?;
-        }
-        match compression {
-            Compression::NONE => {
-                // ~ nothing to do
-            }
-            #[cfg(feature = "gzip")]
-            Compression::GZIP => {
-                let cdata = gzip::compress(&buf)?;
-                render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
-            }
-            #[cfg(feature = "snappy")]
-            Compression::SNAPPY => {
-                let cdata = snappy::compress(&buf)?;
-                render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
-            }
-        }
-        buf.encode(out)
+        let _ = timestamp;
+        self._encode(out, compression)
     }
 }
 
@@ -382,7 +357,7 @@ impl<'a> MessageProduceRequest<'a> {
     }
 }
 
-impl<'a> ToByte for Option<&'a [u8]> {
+impl ToByte for Option<&[u8]> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         match *self {
             Some(xs) => xs.encode(buffer),
@@ -397,6 +372,7 @@ impl<'a> ToByte for Option<&'a [u8]> {
 pub struct ProduceResponse {
     pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionProduceResponse>,
+    pub throttle_time_ms: i32,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -410,6 +386,7 @@ pub struct PartitionProduceResponse {
     pub partition: i32,
     pub error: i16,
     pub offset: i64,
+    pub log_append_time: i64,
 }
 
 impl ProduceResponse {
@@ -455,7 +432,8 @@ impl FromByte for ProduceResponse {
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         try_multi!(
             self.header.decode(buffer),
-            self.topic_partitions.decode(buffer)
+            self.topic_partitions.decode(buffer),
+            self.throttle_time_ms.decode(buffer)
         )
     }
 }
@@ -477,7 +455,8 @@ impl FromByte for PartitionProduceResponse {
         try_multi!(
             self.partition.decode(buffer),
             self.error.decode(buffer),
-            self.offset.decode(buffer)
+            self.offset.decode(buffer),
+            self.log_append_time.decode(buffer)
         )
     }
 }
