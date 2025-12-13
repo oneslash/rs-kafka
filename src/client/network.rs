@@ -342,10 +342,11 @@ impl fmt::Debug for KafkaConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "KafkaConnection {{ id: {}, secured: {}, host: \"{}\" }}",
+            "KafkaConnection {{ id: {}, secured: {}, host: \"{}\", api_versions: {} }}",
             self.id,
             self.stream.is_secured(),
-            self.host
+            self.host,
+            self.broker_api_versions.is_some()
         )
     }
 }
@@ -369,10 +370,6 @@ impl KafkaConnection {
         Ok(buffer)
     }
 
-    pub fn broker_api_versions(&self) -> Option<&BrokerApiVersions> {
-        self.broker_api_versions.as_ref()
-    }
-
     fn shutdown(&mut self) -> Result<()> {
         let r = self.stream.shutdown(Shutdown::Both);
         debug!("Shut down: {:?} => {:?}", self, r);
@@ -383,7 +380,11 @@ impl KafkaConnection {
         let req = ApiVersionsRequest::new(correlation_id, client_id);
         __send_request(self, req)?;
         let resp = __get_response::<ApiVersionsResponse>(self)?;
-        self.broker_api_versions = Some(resp.into_broker_api_versions()?);
+        let versions = resp.into_broker_api_versions()?;
+        let _ = versions.select_highest_common_version(0, &[4])?; // Produce v4
+        let _ = versions.select_highest_common_version(1, &[4])?; // Fetch v4
+        let _ = versions.select_highest_common_version(18, &[2])?; // ApiVersions v2
+        self.broker_api_versions = Some(versions);
         Ok(())
     }
 

@@ -1,31 +1,14 @@
 use std::io::{Read, Write};
 
 use crate::codecs::{FromByte, ToByte};
-#[cfg(feature = "gzip")]
-#[allow(unused_imports)]
-use crate::compression::gzip;
-#[cfg(feature = "snappy")]
-#[allow(unused_imports)]
-use crate::compression::snappy;
 use crate::compression::Compression;
 
 use crate::error::{KafkaCode, Result};
 
-use super::to_crc;
 use super::records::encode_record_batch;
 use super::{HeaderRequest, HeaderResponse};
 use super::API_KEY_PRODUCE;
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
-
-/// The magic byte (a.k.a version) we use for sent messages.
-const MESSAGE_MAGIC_BYTE: i8 = 0;
-
-#[cfg(feature = "producer_timestamp")]
-/// The magic byte (a.k.a version) used to specify message type with timestamp.
-// In versions prior to Kafka 0.10, the only supported message format version (which is indicated in the magic value) was 0.
-// Message format version 1 was introduced with timestamp support in version 0.10.
-// See https://kafka.apache.org/documentation/#messageset
-const MESSAGE_MAGIC_BYTE_WITH_TIMESTAMP: i8 = 1;
 
 const PRODUCE_API_VERSION: i16 = 4;
 
@@ -231,129 +214,9 @@ impl<'a> PartitionProduceRequest<'a> {
     }
 }
 
-// ~ A helper method to render `cdata` into `out` as a compressed message.
-// ~ `out` is first cleared and then populated with the rendered message.
-#[cfg(any(feature = "snappy", feature = "gzip"))]
-fn render_compressed(out: &mut Vec<u8>, cdata: &[u8], compression: Compression) -> Result<()> {
-    out.clear();
-    let cmsg = MessageProduceRequest::new(None, Some(cdata));
-
-    cmsg._encode_to_buf(out, MESSAGE_MAGIC_BYTE, compression as i8)
-}
-
-// available when feature producer_timestamp and snappy || gzip are available
-// ~ A helper method to render `cdata` into `out` as a compressed message.
-// ~ `out` is first cleared and then populated with the rendered message.
-#[cfg(all(
-    feature = "producer_timestamp",
-    any(feature = "snappy", feature = "gzip")
-))]
-fn render_compressed_with_timestamp(
-    out: &mut Vec<u8>,
-    cdata: &[u8],
-    compression: Compression,
-    timestamp: ProducerTimestamp,
-) -> Result<()> {
-    out.clear();
-    let cmsg = MessageProduceRequest::new(None, Some(cdata));
-
-    let now = chrono::Utc::now().timestamp_millis(); // ~ get current timestamp
-    cmsg._encode_to_buf_with_timestamp(
-        out,
-        MESSAGE_MAGIC_BYTE_WITH_TIMESTAMP,
-        compression as i8 | timestamp as i8,
-        now,
-    )
-}
-
 impl<'a> MessageProduceRequest<'a> {
     fn new<'b>(key: Option<&'b [u8]>, value: Option<&'b [u8]>) -> MessageProduceRequest<'b> {
         MessageProduceRequest { key, value }
-    }
-
-    // render a single message as: Offset MessageSize Message
-    //
-    // Offset => int64 (always encoded as zero here)
-    // MessageSize => int32
-    // Message => Crc MagicByte Attributes Key Value
-    // Crc => int32
-    // MagicByte => int8
-    // Attributes => int8
-    // Key => bytes
-    // Value => bytes
-    //
-    // note: the rendered data corresponds to a single MessageSet in the kafka protocol
-    fn _encode_to_buf(&self, buffer: &mut Vec<u8>, magic: i8, attributes: i8) -> Result<()> {
-        (0i64).encode(buffer)?; // offset in the response request can be anything
-
-        let size_pos = buffer.len();
-        let mut size: i32 = 0;
-        size.encode(buffer)?; // reserve space for the size to be computed later
-
-        let crc_pos = buffer.len(); // remember the position where to update the crc later
-        let mut crc: i32 = 0;
-        crc.encode(buffer)?; // reserve space for the crc to be computed later
-        magic.encode(buffer)?;
-        attributes.encode(buffer)?;
-        self.key.encode(buffer)?;
-        self.value.encode(buffer)?;
-
-        // compute the crc and store it back in the reserved space
-        crc = to_crc(&buffer[(crc_pos + 4)..]) as i32;
-        crc.encode(&mut &mut buffer[crc_pos..crc_pos + 4])?;
-
-        // compute the size and store it back in the reserved space
-        size = (buffer.len() - crc_pos) as i32;
-        size.encode(&mut &mut buffer[size_pos..size_pos + 4])?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "producer_timestamp")]
-    // render a single message as: Offset MessageSize Message
-    //
-    // Offset => int64 (always encoded as zero here)
-    // MessageSize => int32
-    // Message => Crc MagicByte Attributes Key Value
-    // Crc => int32
-    // MagicByte => int8
-    // Attributes => int8
-    // Timestamp => int64
-    // Key => bytes
-    // Value => bytes
-    //
-    // note: the rendered data corresponds to a single MessageSet in the kafka protocol
-    fn _encode_to_buf_with_timestamp(
-        &self,
-        buffer: &mut Vec<u8>,
-        magic: i8,
-        attributes: i8,
-        timestamp: i64,
-    ) -> Result<()> {
-        (0i64).encode(buffer)?; // offset in the response request can be anything
-
-        let size_pos = buffer.len();
-        let mut size: i32 = 0;
-        size.encode(buffer)?; // reserve space for the size to be computed later
-
-        let crc_pos = buffer.len(); // remember the position where to update the crc later
-        let mut crc: i32 = 0;
-        crc.encode(buffer)?; // reserve space for the crc to be computed later
-        magic.encode(buffer)?;
-        attributes.encode(buffer)?;
-        timestamp.encode(buffer)?;
-        self.key.encode(buffer)?;
-        self.value.encode(buffer)?;
-
-        // compute the crc and store it back in the reserved space
-        crc = to_crc(&buffer[(crc_pos + 4)..]) as i32;
-        crc.encode(&mut &mut buffer[crc_pos..crc_pos + 4])?;
-
-        // compute the size and store it back in the reserved space
-        size = (buffer.len() - crc_pos) as i32;
-        size.encode(&mut &mut buffer[size_pos..size_pos + 4])?;
-
-        Ok(())
     }
 }
 

@@ -50,6 +50,7 @@ pub struct PartitionFetchRequest {
 }
 
 impl<'a, 'b> FetchRequest<'a, 'b> {
+    #[allow(dead_code)]
     pub fn new(
         correlation_id: i32,
         client_id: &'a str,

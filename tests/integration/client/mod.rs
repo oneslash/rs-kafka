@@ -34,7 +34,7 @@ fn test_kafka_client_load_metadata() {
     let mut client = new_kafka_client();
     let client_id = "test-id".to_string();
     client.set_client_id(client_id.clone());
-    client.load_metadata_all(); // why unwrap??
+    client.load_metadata_all().unwrap();
 
     let topics = client.topics();
 
@@ -74,7 +74,7 @@ fn test_kafka_client_load_metadata() {
 /// * KafkaClient::fetch_offsets
 #[test]
 fn test_produce_fetch_messages() {
-    tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
     let mut client = new_ready_kafka_client();
     let topics = [TEST_TOPIC_NAME, TEST_TOPIC_NAME_2];
     let init_latest_offsets = client.fetch_offsets(&topics, FetchOffset::Latest).unwrap();
@@ -160,7 +160,7 @@ fn test_produce_fetch_messages() {
 
 #[test]
 fn test_commit_offset() {
-    tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
     let mut client = new_ready_kafka_client();
 
     for &(partition, offset) in &[
@@ -171,7 +171,9 @@ fn test_commit_offset() {
         (TEST_TOPIC_PARTITIONS[0], 500),
         (TEST_TOPIC_PARTITIONS[1], 600),
     ] {
-        client.commit_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME, partition, offset);
+        client
+            .commit_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME, partition, offset)
+            .unwrap();
 
         let partition_offsets: HashSet<PartitionOffset> = client
             .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)
@@ -229,7 +231,7 @@ fn test_commit_offsets() {
     ];
 
     for commit_pair in &commits {
-        client.commit_offsets(TEST_GROUP_NAME, commit_pair); // why unwrap ??
+        client.commit_offsets(TEST_GROUP_NAME, commit_pair).unwrap();
 
         let partition_offsets: HashSet<PartitionOffset> = client
             .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)

@@ -146,15 +146,6 @@ fn encode_record(
 
 type RecordKeyValue<'a> = (Option<&'a [u8]>, Option<&'a [u8]>);
 
-/// Encodes an uncompressed RecordBatch (magic=2) containing one record per
-/// provided key/value pair. The returned bytes are the raw RecordBatch bytes
-/// (i.e., without the surrounding Kafka `BYTES` length prefix used in requests).
-pub fn encode_uncompressed_record_batch(
-    messages: &[RecordKeyValue<'_>],
-) -> Result<Vec<u8>> {
-    encode_record_batch(messages, Compression::NONE)
-}
-
 /// Encodes a RecordBatch (magic=2) containing one record per provided key/value
 /// pair.
 ///
@@ -528,13 +519,14 @@ pub fn decode_uncompressed_record_set<'a>(
 mod tests {
     use super::{
         decode_uncompressed_record_set, decompress_record_set, encode_record_batch,
-        encode_uncompressed_record_batch, record_set_has_compressed_batches,
+        record_set_has_compressed_batches,
     };
     use crate::compression::Compression;
 
     #[test]
     fn test_record_batch_roundtrip_single() {
-        let batch = encode_uncompressed_record_batch(&[(None, Some(b"hello".as_slice()))]).unwrap();
+        let batch =
+            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::NONE).unwrap();
         let msgs = decode_uncompressed_record_set(&batch, 0, true).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].offset, 0);
