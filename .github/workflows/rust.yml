@@ -137,7 +137,7 @@ jobs:
 
         sasl.enabled.mechanisms=PLAIN
         listener.name.sasl.sasl.enabled.mechanisms=PLAIN
-        listener.name.sasl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required user_kafkang="kafkang-secret";
+        listener.name.sasl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="kafka" password="kafka-secret" user_kafkang="kafkang-secret";
 
         ssl.keystore.location=$TLS_DIR/server.keystore.p12
         ssl.keystore.password=$TLS_PASS

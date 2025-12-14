@@ -53,9 +53,7 @@ mod tests {
 
     #[test]
     fn test_sasl_plain_initial_response_format() {
-        let cfg = match SaslConfig::plain("user", "pass") {
-            SaslConfig::Plain(cfg) => cfg,
-        };
+        let SaslConfig::Plain(cfg) = SaslConfig::plain("user", "pass");
 
         let token = cfg.initial_response();
         assert_eq!(token, b"\0user\0pass");
@@ -65,9 +63,7 @@ mod tests {
     fn test_sasl_plain_initial_response_utf8_preserved() {
         let username = "us\u{00E9}r";
         let password = "p\u{00E4}ss";
-        let cfg = match SaslConfig::plain(username, password) {
-            SaslConfig::Plain(cfg) => cfg,
-        };
+        let SaslConfig::Plain(cfg) = SaslConfig::plain(username, password);
 
         let token = cfg.initial_response();
         assert!(token.starts_with(&[0]));

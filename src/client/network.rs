@@ -167,7 +167,7 @@ impl Connections {
     }
 
     pub fn set_sasl_config(&mut self, sasl: Option<SaslConfig>) {
-        for (_, conn) in &mut self.conns {
+        for conn in self.conns.values_mut() {
             let _ = conn.item.shutdown();
         }
         self.conns.clear();
