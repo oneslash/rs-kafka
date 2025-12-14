@@ -78,11 +78,7 @@ fn test_fetch_offsets_all_topics_latest_and_earliest_issue_247() {
 
     // Mirror the issue repro: collect all topic names, sort them, and call
     // `fetch_offsets` for Latest and Earliest.
-    let mut topics: Vec<String> = client
-        .topics()
-        .names()
-        .map(ToOwned::to_owned)
-        .collect();
+    let mut topics: Vec<String> = client.topics().names().map(ToOwned::to_owned).collect();
     topics.sort();
     assert!(!topics.is_empty());
 
@@ -95,7 +91,9 @@ fn test_fetch_offsets_all_topics_latest_and_earliest_issue_247() {
 
     for _ in 0..iterations {
         client.fetch_offsets(&topics, FetchOffset::Latest).unwrap();
-        client.fetch_offsets(&topics, FetchOffset::Earliest).unwrap();
+        client
+            .fetch_offsets(&topics, FetchOffset::Earliest)
+            .unwrap();
     }
 }
 
