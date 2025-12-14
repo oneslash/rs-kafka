@@ -67,6 +67,36 @@ fn test_kafka_client_load_metadata() {
     assert_eq!(correct_topic_partitions, topic_partitions);
 }
 
+/// Regression test for kafka-rust/kafka-rust#247.
+///
+/// The reported failure was `UnexpectedEof` ("failed to fill whole buffer") when
+/// calling `KafkaClient::fetch_offsets` for *all* topics.
+#[test]
+fn test_fetch_offsets_all_topics_latest_and_earliest_issue_247() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let mut client = new_ready_kafka_client();
+
+    // Mirror the issue repro: collect all topic names, sort them, and call
+    // `fetch_offsets` for Latest and Earliest.
+    let mut topics: Vec<String> = client.topics().names().map(ToOwned::to_owned).collect();
+    topics.sort();
+    assert!(!topics.is_empty());
+
+    // Allow repeating the call in environments where the issue is intermittent.
+    // Keep default to 1 to avoid slowing CI.
+    let iterations: usize = std::env::var("KAFKA_ISSUE_247_ITERATIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+
+    for _ in 0..iterations {
+        client.fetch_offsets(&topics, FetchOffset::Latest).unwrap();
+        client
+            .fetch_offsets(&topics, FetchOffset::Earliest)
+            .unwrap();
+    }
+}
+
 /// Tests:
 ///
 /// * KafkaClient::produce_messages
