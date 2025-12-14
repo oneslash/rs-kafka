@@ -1,6 +1,6 @@
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use std::fs::File;
-use std::io::{stderr, stdin, BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Write, stderr, stdin};
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 use std::time::Duration;
@@ -8,10 +8,10 @@ use std::{env, process};
 
 use anyhow::anyhow;
 
-use kafka::client::{
-    Compression, KafkaClient, RequiredAcks, DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS,
+use kafkang::client::{
+    Compression, DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS, KafkaClient, RequiredAcks,
 };
-use kafka::producer::{AsBytes, Producer, Record, DEFAULT_ACK_TIMEOUT_MILLIS};
+use kafkang::producer::{AsBytes, DEFAULT_ACK_TIMEOUT_MILLIS, Producer, Record};
 
 /// This is a very simple command line application sending every
 /// non-empty line of standard input to a specified kafka topic; one
@@ -161,7 +161,7 @@ fn send_batch(producer: &mut Producer, batch: &[Record<'_, (), Trimmed>]) -> Res
     for r in rs {
         for tpc in r.partition_confirms {
             if let Err(code) = tpc.offset {
-                //return Err(Error::Kafka(kafka::error::Error::Kafka(code)));
+                //return Err(Error::Kafka(kafkang::error::Error::Kafka(code)));
                 return Err(anyhow!("{:?}", code));
             }
         }
@@ -250,7 +250,7 @@ impl Config {
                     return Err(anyhow!(
                         "Error {:?}",
                         format!("Unsupported compression type: {}", s)
-                    ))
+                    ));
                 }
             },
             required_acks: match m.opt_str("required-acks") {
@@ -262,7 +262,7 @@ impl Config {
                     return Err(anyhow!(
                         "{:?}",
                         format!("Unknown --required-acks argument: {}", s)
-                    ))
+                    ));
                 }
             },
             batch_size: to_number(m.opt_str("batch-size"), 1)?,

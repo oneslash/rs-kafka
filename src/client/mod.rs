@@ -397,7 +397,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = kafkang::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
     /// ```
     #[must_use]
@@ -434,9 +434,9 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// extern crate kafka;
+    /// extern crate kafkang;
     ///
-    /// use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+    /// use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
     ///
     /// fn main() {
     ///     // Default TLS connector:
@@ -524,7 +524,7 @@ impl KafkaClient {
     /// # Example
     ///
     /// ```no_run
-    /// use kafka::client::{Compression, KafkaClient};
+    /// use kafkang::client::{Compression, KafkaClient};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -576,7 +576,7 @@ impl KafkaClient {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use kafka::client::{KafkaClient, FetchPartition};
+    /// use kafkang::client::{KafkaClient, FetchPartition};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -730,16 +730,16 @@ impl KafkaClient {
     }
 
     #[cfg(feature = "producer_timestamp")]
-    /// Sets the compression algorithm to use when sending out messages.
+    /// Sets the timestamp type used when producing messages (Kafka record batches).
     ///
     /// # Example
     ///
     /// ```no_run
-    /// use kafka::client::{Compression, KafkaClient};
+    /// use kafkang::client::{KafkaClient, ProducerTimestamp};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
-    /// client.set_producer_timestamp(Timestamp::CreateTime);
+    /// client.set_producer_timestamp(Some(ProducerTimestamp::CreateTime));
     /// ```
     #[inline]
     pub fn set_producer_timestamp(&mut self, producer_timestamp: Option<ProducerTimestamp>) {
@@ -758,8 +758,8 @@ impl KafkaClient {
     ///
     /// # Examples
     /// ```no_run
-    /// use kafka::client::KafkaClient;
-    /// use kafka::client::metadata::Broker;
+    /// use kafkang::client::KafkaClient;
+    /// use kafkang::client::metadata::Broker;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -784,7 +784,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = kafkang::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
     /// for topic in client.topics().names() {
     ///   println!("topic: {}", topic);
@@ -815,7 +815,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = kafkang::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// let _ = client.load_metadata(&["my-topic"]).unwrap();
     /// ```
     ///
@@ -877,12 +877,12 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use kafkang::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics: Vec<String> = client.topics().names().map(ToOwned::to_owned).collect();
-    /// let offsets = client.fetch_offsets(&topics, kafka::client::FetchOffset::Latest).unwrap();
+    /// let offsets = client.fetch_offsets(&topics, kafkang::client::FetchOffset::Latest).unwrap();
     /// ```
     ///
     /// Returns a mapping of topic name to `PartitionOffset`s for each
@@ -914,7 +914,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{FetchOffset, KafkaClient};
+    /// use kafkang::client::{FetchOffset, KafkaClient};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1026,7 +1026,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchOffset};
+    /// use kafkang::client::{KafkaClient, FetchOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1075,7 +1075,7 @@ impl KafkaClient {
     ///   messages with a lower offset.)
     ///
     /// Note: before using this method consider using
-    /// `kafka::consumer::Consumer` instead which provides an easier
+    /// `kafkang::consumer::Consumer` instead which provides an easier
     /// to use API for the regular use-case of fetching messesage from
     /// Kafka.
     ///
@@ -1089,7 +1089,7 @@ impl KafkaClient {
     /// messages.
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchPartition};
+    /// use kafkang::client::{KafkaClient, FetchPartition};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -1116,7 +1116,7 @@ impl KafkaClient {
     ///   }
     /// }
     /// ```
-    /// See also `kafka::consumer`.
+    /// See also `kafkang::consumer`.
     /// See also `KafkaClient::set_fetch_max_bytes_per_partition`.
     pub fn fetch_messages<'a, I, J>(&mut self, input: I) -> Result<Vec<fetch::Response>>
     where
@@ -1192,7 +1192,7 @@ impl KafkaClient {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use kafka::client::{KafkaClient, ProduceMessage, RequiredAcks};
+    /// use kafkang::client::{KafkaClient, ProduceMessage, RequiredAcks};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -1224,7 +1224,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, CommitOffset};
+    /// use kafkang::client::{KafkaClient, CommitOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1278,7 +1278,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use kafkang::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1301,7 +1301,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchGroupOffset};
+    /// use kafkang::client::{KafkaClient, FetchGroupOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1350,7 +1350,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use kafkang::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();

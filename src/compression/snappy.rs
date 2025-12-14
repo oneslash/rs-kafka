@@ -218,7 +218,7 @@ mod tests {
     use std::io::Read;
     use std::str;
 
-    use super::{compress, uncompress_to, SnappyReader};
+    use super::{SnappyReader, compress, uncompress_to};
     use crate::error::{Error, Result};
 
     fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
@@ -254,10 +254,7 @@ mod tests {
         ];
         let uncompressed = uncompress(compressed);
         assert!(uncompressed.is_err());
-        assert!(matches!(
-            uncompressed.err(),
-            Some(Error::InvalidSnappy(_))
-        ));
+        assert!(matches!(uncompressed.err(), Some(Error::InvalidSnappy(_))));
     }
 
     static ORIGINAL: &str = include_str!("../../test-data/fetch1.txt");

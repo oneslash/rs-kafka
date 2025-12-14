@@ -10,18 +10,20 @@ use std::{mem, result};
 use fnv::FnvHasher;
 
 use crate::codecs::ToByte;
+use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy::SnappyReader;
-use crate::compression::Compression;
 use crate::error::KafkaCode;
 use crate::{Error, Result};
 
+use super::records::{
+    decode_uncompressed_record_set, decompress_record_set, record_set_has_compressed_batches,
+};
 use super::to_crc;
-use super::records::{decode_uncompressed_record_set, decompress_record_set, record_set_has_compressed_batches};
 use super::zreader::ZReader;
-use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
+use super::{API_KEY_FETCH, API_VERSION, HeaderRequest};
 
 pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
 
@@ -216,8 +218,7 @@ impl Response {
         reqs: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
     ) -> Result<Response> {
-        let slice: &'static [u8] =
-            unsafe { mem::transmute::<&[u8], &'static [u8]>(&response[..]) };
+        let slice: &'static [u8] = unsafe { mem::transmute::<&[u8], &'static [u8]>(&response[..]) };
         let mut r = ZReader::new(slice);
         let correlation_id = r.read_i32()?;
         let api_version = reqs.map_or(0, |req| req.header.api_version);
@@ -427,11 +428,7 @@ impl<'a> MessageSet<'a> {
         // publicly no mutability possibilities
         // this is safe
         let slice: &'a [u8] = unsafe { mem::transmute::<&[u8], &'a [u8]>(&data[..]) };
-        let ms = MessageSet::from_slice(
-            slice,
-            req_offset,
-            validate_crc,
-        )?;
+        let ms = MessageSet::from_slice(slice, req_offset, validate_crc)?;
         Ok(MessageSet {
             raw_data: Cow::Owned(data),
             messages: ms.messages,
@@ -483,7 +480,7 @@ impl<'a> MessageSet<'a> {
                         _ => return Err(Error::UnsupportedCompression),
                     }
                 }
-            };
+            }
         }
         Ok(MessageSet {
             raw_data: Cow::Borrowed(raw_data),
@@ -799,7 +796,7 @@ mod tests {
 
     #[cfg(all(feature = "nightly", kafka_rust_nightly))]
     mod benches {
-        use test::{black_box, Bencher};
+        use test::{Bencher, black_box};
 
         use super::super::{FetchRequest, Response};
         use super::into_messages;

@@ -3,10 +3,10 @@ pub use super::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use kafka::client::{FetchOffset, PartitionOffset};
-use kafka::consumer::Consumer;
-use kafka::producer::Record;
-use kafka::producer::{Producer, RequiredAcks};
+use kafkang::client::{FetchOffset, PartitionOffset};
+use kafkang::consumer::Consumer;
+use kafkang::producer::Record;
+use kafkang::producer::{Producer, RequiredAcks};
 
 use rand::RngCore;
 
@@ -30,13 +30,13 @@ macro_rules! test_consumer_config {
     ( $x:expr ) => {
         $x.with_topic_partitions(TEST_TOPIC_NAME.to_owned(), &TEST_TOPIC_PARTITIONS)
             .with_group(TEST_GROUP_NAME.to_owned())
-            .with_fallback_offset(kafka::consumer::FetchOffset::Latest)
-            .with_offset_storage(Some(kafka::consumer::GroupOffsetStorage::Kafka))
+            .with_fallback_offset(kafkang::consumer::FetchOffset::Latest)
+            .with_offset_storage(Some(kafkang::consumer::GroupOffsetStorage::Kafka))
     };
 }
 
 /// Return a Consumer builder with some defaults
-pub fn test_consumer_builder() -> kafka::consumer::Builder {
+pub fn test_consumer_builder() -> kafkang::consumer::Builder {
     test_consumer_config!(Consumer::from_client(new_ready_kafka_client()))
 }
 

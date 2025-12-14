@@ -1,9 +1,9 @@
 //! Clients for comunicating with a [Kafka](http://kafka.apache.org/)
 //! cluster.  These are:
 //!
-//! - `kafka::producer::Producer` - for sending message to Kafka
-//! - `kafka::consumer::Consumer` - for retrieving/consuming messages from Kafka
-//! - `kafka::client::KafkaClient` - a lower-level, general purpose client leaving
+//! - `kafkang::producer::Producer` - for sending message to Kafka
+//! - `kafkang::consumer::Consumer` - for retrieving/consuming messages from Kafka
+//! - `kafkang::client::KafkaClient` - a lower-level, general purpose client leaving
 //!   you with more power but also more responsibility
 //!
 //! See module level documentation corresponding to each client individually.

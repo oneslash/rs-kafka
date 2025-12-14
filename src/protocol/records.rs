@@ -151,7 +151,10 @@ type RecordKeyValue<'a> = (Option<&'a [u8]>, Option<&'a [u8]>);
 ///
 /// The returned bytes are the raw RecordBatch bytes (i.e., without the
 /// surrounding Kafka `BYTES` length prefix used in requests).
-pub fn encode_record_batch(messages: &[RecordKeyValue<'_>], compression: Compression) -> Result<Vec<u8>> {
+pub fn encode_record_batch(
+    messages: &[RecordKeyValue<'_>],
+    compression: Compression,
+) -> Result<Vec<u8>> {
     let ts = now_millis()?;
     let mut records = Vec::new();
     for (idx, (k, v)) in messages.iter().enumerate() {
@@ -163,7 +166,10 @@ pub fn encode_record_batch(messages: &[RecordKeyValue<'_>], compression: Compres
         #[cfg(feature = "gzip")]
         Compression::GZIP => (Compression::GZIP as i16, gzip::compress(&records)?),
         #[cfg(feature = "snappy")]
-        Compression::SNAPPY => (Compression::SNAPPY as i16, snappy::compress_xerial(&records)?),
+        Compression::SNAPPY => (
+            Compression::SNAPPY as i16,
+            snappy::compress_xerial(&records)?,
+        ),
     };
 
     let mut batch = Vec::new();
@@ -208,7 +214,8 @@ pub fn encode_record_batch(messages: &[RecordKeyValue<'_>], compression: Compres
     batch.extend_from_slice(&records);
 
     // Fill BatchLength: bytes following the BatchLength field
-    let batch_length = i32::try_from(batch.len().saturating_sub(12)).map_err(|_| Error::CodecError)?;
+    let batch_length =
+        i32::try_from(batch.len().saturating_sub(12)).map_err(|_| Error::CodecError)?;
     batch_length.encode(&mut &mut batch[batch_len_pos..batch_len_pos + 4])?;
 
     // Fill CRC32C over bytes from Attributes to end
@@ -223,12 +230,20 @@ pub(crate) fn record_set_has_compressed_batches(record_set: &[u8]) -> Result<boo
     let mut r = Cursor::new(record_set);
 
     while (r.position() as usize) < record_set.len() {
-        let _base_offset = r
-            .read_i64::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
-        let batch_length = r
-            .read_i32::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
+        let _base_offset = r.read_i64::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
+        let batch_length = r.read_i32::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         if batch_length < 0 {
             return Err(Error::CodecError);
@@ -245,13 +260,19 @@ pub(crate) fn record_set_has_compressed_batches(record_set: &[u8]) -> Result<boo
         r.set_position(batch_end as u64);
 
         let mut br = Cursor::new(batch_bytes);
-        let _ = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let _ = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let magic = br.read_i8().map_err(|_| Error::UnexpectedEOF)?;
         if magic != RECORD_BATCH_MAGIC {
             return Err(Error::UnsupportedProtocol);
         }
-        let _ = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let attributes = br.read_i16::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let _ = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let attributes = br
+            .read_i16::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         if (attributes & 0x07) != 0 {
             return Ok(true);
         }
@@ -265,12 +286,20 @@ pub(crate) fn decompress_record_set(record_set: &[u8], validate_crc: bool) -> Re
     let mut out = Vec::with_capacity(record_set.len());
 
     while (r.position() as usize) < record_set.len() {
-        let base_offset = r
-            .read_i64::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
-        let batch_length = r
-            .read_i32::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
+        let base_offset = r.read_i64::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
+        let batch_length = r.read_i32::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         if batch_length < 0 {
             return Err(Error::CodecError);
@@ -287,24 +316,44 @@ pub(crate) fn decompress_record_set(record_set: &[u8], validate_crc: bool) -> Re
         r.set_position(batch_end as u64);
 
         let mut br = Cursor::new(batch_bytes);
-        let _partition_leader_epoch = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let _partition_leader_epoch = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let magic = br.read_i8().map_err(|_| Error::UnexpectedEOF)?;
         if magic != RECORD_BATCH_MAGIC {
             return Err(Error::UnsupportedProtocol);
         }
 
-        let crc_wire = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let crc_wire = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let attrs_pos = br.position() as usize;
-        let attributes = br.read_i16::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let attributes = br
+            .read_i16::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let compression = attributes & 0x07;
 
-        let _ = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // last_offset_delta
-        let _ = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // base_timestamp
-        let _ = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // max_timestamp
-        let _ = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // producer_id
-        let _ = br.read_i16::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // producer_epoch
-        let _ = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // base_sequence
-        let _ = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?; // records_count
+        let _ = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // last_offset_delta
+        let _ = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // base_timestamp
+        let _ = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // max_timestamp
+        let _ = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // producer_id
+        let _ = br
+            .read_i16::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // producer_epoch
+        let _ = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // base_sequence
+        let _ = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?; // records_count
 
         let records_start = br.position() as usize;
         let records_bytes = &batch_bytes[records_start..];
@@ -364,12 +413,20 @@ pub fn decode_uncompressed_record_set(
     let mut out = Vec::new();
 
     while (r.position() as usize) < record_set.len() {
-        let base_offset = r
-            .read_i64::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
-        let batch_length = r
-            .read_i32::<BigEndian>()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::UnexpectedEof { Error::UnexpectedEOF } else { Error::Io(e) })?;
+        let base_offset = r.read_i64::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
+        let batch_length = r.read_i32::<BigEndian>().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::UnexpectedEOF
+            } else {
+                Error::Io(e)
+            }
+        })?;
 
         if batch_length < 0 {
             return Err(Error::CodecError);
@@ -386,27 +443,47 @@ pub fn decode_uncompressed_record_set(
         r.set_position(batch_end as u64);
 
         let mut br = Cursor::new(batch_bytes);
-        let _partition_leader_epoch = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let _partition_leader_epoch = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let magic = br.read_i8().map_err(|_| Error::UnexpectedEOF)?;
         if magic != RECORD_BATCH_MAGIC {
             return Err(Error::UnsupportedProtocol);
         }
 
-        let crc_wire = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let crc_wire = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let attrs_pos = br.position() as usize;
-        let attributes = br.read_i16::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let attributes = br
+            .read_i16::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         let compression = attributes & 0x07;
         if compression != 0 {
             return Err(Error::UnsupportedCompression);
         }
 
-        let _last_offset_delta = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let _base_timestamp = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let _max_timestamp = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let _producer_id = br.read_i64::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let _producer_epoch = br.read_i16::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let _base_sequence = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
-        let records_count = br.read_i32::<BigEndian>().map_err(|_| Error::UnexpectedEOF)?;
+        let _last_offset_delta = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let _base_timestamp = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let _max_timestamp = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let _producer_id = br
+            .read_i64::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let _producer_epoch = br
+            .read_i16::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let _base_sequence = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
+        let records_count = br
+            .read_i32::<BigEndian>()
+            .map_err(|_| Error::UnexpectedEOF)?;
         if records_count < 0 {
             return Err(Error::CodecError);
         }
@@ -428,7 +505,9 @@ pub fn decode_uncompressed_record_set(
                 return Err(Error::CodecError);
             }
             let rec_start = rr.position() as usize;
-            let rec_end = rec_start.checked_add(len as usize).ok_or(Error::CodecError)?;
+            let rec_end = rec_start
+                .checked_add(len as usize)
+                .ok_or(Error::CodecError)?;
             if rec_end > records_bytes.len() {
                 return Err(Error::UnexpectedEOF);
             }
@@ -536,7 +615,8 @@ mod tests {
     #[cfg(feature = "gzip")]
     #[test]
     fn test_record_batch_roundtrip_gzip() {
-        let batch = encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::GZIP).unwrap();
+        let batch =
+            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::GZIP).unwrap();
         assert!(record_set_has_compressed_batches(&batch).unwrap());
         let decompressed = decompress_record_set(&batch, true).unwrap();
         assert!(!record_set_has_compressed_batches(&decompressed).unwrap());

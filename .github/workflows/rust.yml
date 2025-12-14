@@ -11,6 +11,24 @@ env:
   RUST_TEST_THREADS: 1
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: 1.85.0
+        components: rustfmt, clippy
+
+    - name: Check formatting
+      run: cargo fmt --all --check
+
+    - name: Clippy
+      run: cargo clippy --all-targets --all-features
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -35,7 +53,8 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: stable
+        toolchain: 1.85.0
+        components: rustfmt, clippy
 
     - name: Set up Java
       uses: actions/setup-java@v4
@@ -154,12 +173,12 @@ jobs:
         "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server 127.0.0.1:9092 --create --if-not-exists --topic kafka-rust-test2 --partitions 2 --replication-factor 1
 
     - name: Run tests
-      run: cargo test --features integration_tests
+      run: cargo test --all-features
       env:
         KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
 
     - name: Run tests (TLS)
-      run: cargo test --features integration_tests
+      run: cargo test --all-features
       env:
         KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
         KAFKA_CLIENT_SECURE: tls

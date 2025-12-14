@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use kafka::error::Error as KafkaError;
-use kafka::producer::{Producer, Record, RequiredAcks};
+use kafkang::error::Error as KafkaError;
+use kafkang::producer::{Producer, Record, RequiredAcks};
 
 /// This program demonstrates sending single message through a
 /// `Producer`.  This is a convenient higher-level client that will
@@ -19,11 +19,7 @@ fn main() {
     }
 }
 
-fn produce_message(
-    data: &[u8],
-    topic: &str,
-    brokers: Vec<String>,
-) -> Result<(), KafkaError> {
+fn produce_message(data: &[u8], topic: &str, brokers: Vec<String>) -> Result<(), KafkaError> {
     println!("About to publish a message at {:?} to: {}", brokers, topic);
 
     // ~ create a producer. this is a relatively costly operation, so

@@ -15,7 +15,7 @@
 //! ```no_run
 //! use std::fmt::Write;
 //! use std::time::Duration;
-//! use kafka::producer::{Producer, Record, RequiredAcks};
+//! use kafkang::producer::{Producer, Record, RequiredAcks};
 //!
 //! let mut producer =
 //!     Producer::from_hosts(vec!("localhost:9092".to_owned()))
@@ -319,11 +319,7 @@ impl<P: Partitioner> Producer<P> {
 }
 
 fn to_option(data: &[u8]) -> Option<&[u8]> {
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 // --------------------------------------------------------------------
@@ -768,7 +764,8 @@ mod default_partitioner_tests {
             ),
         ]);
 
-        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> = DefaultPartitioner::default();
+        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> =
+            DefaultPartitioner::default();
 
         // ~ validate that partitioning by the same key leads to the same
         // partition

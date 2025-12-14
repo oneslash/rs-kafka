@@ -14,27 +14,29 @@ macro_rules! try_multi {
 }
 
 pub mod consumer;
+pub mod list_offset;
 pub mod metadata;
 pub mod produce;
-pub mod list_offset;
 
-pub mod fetch;
 pub mod api_versions;
+pub mod fetch;
 pub mod records;
 mod zreader;
 
 // ~ convenient re-exports for request/response types defined in the
 // submodules
+#[allow(unused_imports)]
+pub use self::api_versions::{
+    ApiVersionRange, ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions,
+};
 pub use self::consumer::{
     GroupCoordinatorRequest, GroupCoordinatorResponse, OffsetCommitRequest, OffsetCommitResponse,
     OffsetCommitVersion, OffsetFetchRequest, OffsetFetchResponse, OffsetFetchVersion,
 };
 pub use self::fetch::FetchRequest;
-#[allow(unused_imports)]
-pub use self::api_versions::{ApiVersionRange, ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions};
+pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 pub use self::metadata::{MetadataRequest, MetadataResponse};
 pub use self::produce::{ProduceRequest, ProduceResponse};
-pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 
 // --------------------------------------------------------------------
 

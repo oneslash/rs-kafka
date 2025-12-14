@@ -135,7 +135,7 @@ for ver in $vers; do
         exit 1
       }
 
-      cargo test --features integration_tests || {
+      cargo test --all-features || {
         teardown
         exit 1
       }

@@ -3,8 +3,8 @@ use std::time::Duration;
 use std::{env, process};
 //use std::ascii::AsciiExt;
 
-use anyhow::{bail, Result};
-use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+use anyhow::{Result, bail};
+use kafkang::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 
 use tracing::{error, info};
 

@@ -8,8 +8,8 @@ This guide shows how to migrate existing OpenSSL-based client setup code to the 
 ## What changed (high level)
 
 - The TLS backend is now `rustls` (synchronous, `std::net::TcpStream`-based).
-- `SecurityConfig::new` no longer accepts `openssl::ssl::SslConnector`; it now accepts a `kafka::client::TlsConnector`.
-- The public error variant for TLS failures is now `kafka::Error::Tls(..)` (replacing `kafka::Error::Ssl(..)`).
+- `SecurityConfig::new` no longer accepts `openssl::ssl::SslConnector`; it now accepts a `kafkang::client::TlsConnector`.
+- The public error variant for TLS failures is now `kafkang::Error::Tls(..)` (replacing `kafkang::Error::Ssl(..)`).
 - Hostname verification is still supported via `SecurityConfig::with_hostname_verification(bool)`:
   - Default is `true` (recommended).
   - Setting it to `false` disables only the hostname check; certificate chain validation still runs.
@@ -19,18 +19,18 @@ This guide shows how to migrate existing OpenSSL-based client setup code to the 
 
 If you only depended on OpenSSL for this crate’s TLS support, you can remove it from your application:
 
-    # Remove these if they were only used for kafka-rust TLS:
+    # Remove these if they were only used for kafkang TLS:
     # openssl = ...
 
 You generally do not need to change crate features, because `security` remains enabled by default:
 
     [dependencies]
-    kafka = "0.10"
+    kafkang = "0.1.0"
 
 If you previously disabled default features, ensure `security` is enabled if you want TLS:
 
     [dependencies]
-    kafka = { version = "0.10", default-features = false, features = ["security"] }
+    kafkang = { version = "0.1.0", default-features = false, features = ["security"] }
 
 
 ## Code migration
@@ -39,7 +39,7 @@ If you previously disabled default features, ensure `security` is enabled if you
 
 Before (OpenSSL-based; pre-migration):
 
-    use kafka::client::{KafkaClient, SecurityConfig};
+    use kafkang::client::{KafkaClient, SecurityConfig};
     use openssl::ssl::{SslConnector, SslMethod};
 
     let openssl = SslConnector::builder(SslMethod::tls()).unwrap().build();
@@ -48,7 +48,7 @@ Before (OpenSSL-based; pre-migration):
 
 After (rustls-based):
 
-    use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+    use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
 
     let connector = TlsConnector::default();
     let security = SecurityConfig::new(connector);
@@ -61,7 +61,7 @@ After (rustls-based):
 
 If your broker is signed by a private CA, append that CA certificate (or bundle) as PEM:
 
-    use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+    use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
 
     let connector = TlsConnector::builder()
         .add_ca_certs_pem_file("ca.crt.pem")
@@ -79,7 +79,7 @@ If your broker is signed by a private CA, append that CA certificate (or bundle)
 
 If the broker requires a client certificate, configure it on the connector builder:
 
-    use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+    use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
 
     let connector = TlsConnector::builder()
         .add_ca_certs_pem_file("ca.crt.pem")
@@ -116,7 +116,7 @@ To disable hostname verification (insecure; not recommended):
 
 If you connect to an IP (e.g. `127.0.0.1:9094`) but the broker certificate is issued for `localhost`, set an explicit server name for SNI/verification:
 
-    use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+    use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
 
     let connector = TlsConnector::builder()
         .add_ca_certs_pem_file("ca.crt.pem")
@@ -132,11 +132,11 @@ If you connect to an IP (e.g. `127.0.0.1:9094`) but the broker certificate is is
 
 ## Error handling changes
 
-If you previously matched on `kafka::Error::Ssl(..)`, update your code to handle `kafka::Error::Tls(..)`:
+If you previously matched on `kafkang::Error::Ssl(..)`, update your code to handle `kafkang::Error::Tls(..)`:
 
     match client.load_metadata_all() {
         Ok(_) => {}
-        Err(kafka::Error::Tls(e)) => {
+        Err(kafkang::Error::Tls(e)) => {
             eprintln!("TLS error: {e}");
         }
         Err(e) => {
@@ -149,4 +149,3 @@ If you previously matched on `kafka::Error::Ssl(..)`, update your code to handle
 
 - **Broker certificate must have SANs**: rustls/webpki requires the broker certificate to contain a Subject Alternative Name for the hostname you verify (for example `DNS:localhost`). Certificates that rely only on the legacy Common Name field will fail hostname verification.
 - **Wrong-host / wrong-CA errors are now surfaced**: the client now returns the last connection/TLS error when metadata fetch fails across all hosts, rather than only returning a generic “no host reachable”.
-

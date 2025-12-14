@@ -4,14 +4,13 @@ use crate::codecs::{FromByte, ToByte};
 use crate::error::{KafkaCode, Result};
 use crate::utils::TimestampedPartitionOffset;
 
-use super::{HeaderRequest, HeaderResponse, API_KEY_OFFSET};
+use super::{API_KEY_OFFSET, HeaderRequest, HeaderResponse};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ListOffsetVersion {
     // currently only support 1
     V1 = 1,
 }
-
 
 /// https://kafka.apache.org/protocol.html#The_Messages_ListOffsets
 #[derive(Debug)]

@@ -5,9 +5,9 @@ use crate::compression::Compression;
 
 use crate::error::{KafkaCode, Result};
 
+use super::API_KEY_PRODUCE;
 use super::records::encode_record_batch;
 use super::{HeaderRequest, HeaderResponse};
-use super::API_KEY_PRODUCE;
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
 const PRODUCE_API_VERSION: i16 = 4;
@@ -71,7 +71,12 @@ impl<'a, 'b> ProduceRequest<'a, 'b> {
         #[cfg(feature = "producer_timestamp")] timestamp: Option<ProducerTimestamp>,
     ) -> ProduceRequest<'a, 'b> {
         ProduceRequest {
-            header: HeaderRequest::new(API_KEY_PRODUCE, PRODUCE_API_VERSION, correlation_id, client_id),
+            header: HeaderRequest::new(
+                API_KEY_PRODUCE,
+                PRODUCE_API_VERSION,
+                correlation_id,
+                client_id,
+            ),
             transactional_id: None,
             required_acks,
             timeout,
