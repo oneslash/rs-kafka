@@ -21,6 +21,8 @@ pub mod produce;
 pub mod api_versions;
 pub mod fetch;
 pub mod records;
+pub mod sasl_authenticate;
+pub mod sasl_handshake;
 mod zreader;
 
 // ~ convenient re-exports for request/response types defined in the
@@ -37,6 +39,8 @@ pub use self::fetch::FetchRequest;
 pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 pub use self::metadata::{MetadataRequest, MetadataResponse};
 pub use self::produce::{ProduceRequest, ProduceResponse};
+pub use self::sasl_authenticate::{SaslAuthenticateRequest, SaslAuthenticateResponse};
+pub use self::sasl_handshake::{SaslHandshakeRequest, SaslHandshakeResponse};
 
 // --------------------------------------------------------------------
 
@@ -48,7 +52,9 @@ const API_KEY_METADATA: i16 = 3;
 const API_KEY_OFFSET_COMMIT: i16 = 8;
 const API_KEY_OFFSET_FETCH: i16 = 9;
 const API_KEY_GROUP_COORDINATOR: i16 = 10;
+const API_KEY_SASL_HANDSHAKE: i16 = 17;
 const API_KEY_API_VERSIONS: i16 = 18;
+const API_KEY_SASL_AUTHENTICATE: i16 = 36;
 
 // the default version of Kafka API we are requesting
 const API_VERSION: i16 = 0;
@@ -104,6 +110,7 @@ impl KafkaCode {
             33 => Some(KafkaCode::UnsupportedSaslMechanism),
             34 => Some(KafkaCode::IllegalSaslState),
             35 => Some(KafkaCode::UnsupportedVersion),
+            58 => Some(KafkaCode::SaslAuthenticationFailed),
             _ => Some(KafkaCode::Unknown),
         }
     }
@@ -129,6 +136,10 @@ fn test_kafka_code_from_protocol() {
     assert_kafka_code!(
         KafkaCode::UnsupportedVersion,
         KafkaCode::UnsupportedVersion as i16
+    );
+    assert_kafka_code!(
+        KafkaCode::SaslAuthenticationFailed,
+        KafkaCode::SaslAuthenticationFailed as i16
     );
     assert_kafka_code!(KafkaCode::Unknown, KafkaCode::Unknown as i16);
     // ~ test some un mapped non-zero codes; should all map to "unknown"

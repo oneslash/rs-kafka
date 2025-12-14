@@ -39,6 +39,10 @@ mod state;
 #[cfg(feature = "security")]
 mod tls;
 
+pub mod sasl;
+
+pub use self::sasl::{SaslConfig, SaslPlainConfig};
+
 // ~ re-export (only) certain types from the protocol::fetch module as
 // 'client::fetch'.
 pub mod fetch {
@@ -511,6 +515,17 @@ impl KafkaClient {
     pub fn set_client_id(&mut self, client_id: String) {
         self.conn_pool.set_client_id(client_id.clone());
         self.config.client_id = client_id;
+    }
+
+    /// Sets SASL authentication to use when establishing new broker connections.
+    ///
+    /// Setting/changing this clears the connection pool so existing connections are dropped and
+    /// will be re-established (and re-authenticated) on next use.
+    ///
+    /// Note: SASL provides authentication, not encryption. In production, combine SASL/PLAIN
+    /// with TLS (`KafkaClient::new_secure`) to protect credentials in transit.
+    pub fn set_sasl_config(&mut self, sasl: Option<SaslConfig>) {
+        self.conn_pool.set_sasl_config(sasl);
     }
 
     /// Retrieves the current `KafkaClient::set_client_id` setting.

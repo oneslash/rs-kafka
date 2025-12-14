@@ -16,16 +16,18 @@ mod integration {
     use tracing::debug;
 
     use kafkang::client::{
-        Compression, GroupOffsetStorage, KafkaClient, SecurityConfig, TlsConnector,
+        Compression, GroupOffsetStorage, KafkaClient, SaslConfig, SecurityConfig, TlsConnector,
     };
 
     mod client;
     mod consumer_producer;
+    mod sasl;
     mod tls;
 
     pub const LOCAL_KAFKA_BOOTSTRAP_HOST_PLAINTEXT: &str = "localhost:9092";
     pub const LOCAL_KAFKA_BOOTSTRAP_HOST_TLS: &str = "localhost:9094";
     pub const LOCAL_KAFKA_BOOTSTRAP_HOST_TLS_IP: &str = "127.0.0.1:9094";
+    pub const LOCAL_KAFKA_BOOTSTRAP_HOST_SASL_PLAINTEXT: &str = "localhost:9096";
 
     pub const TEST_TOPIC_NAME: &str = "kafka-rust-test";
     pub const TEST_TOPIC_NAME_2: &str = "kafka-rust-test2";
@@ -63,6 +65,7 @@ mod integration {
         match secure_mode().as_str() {
             "" => LOCAL_KAFKA_BOOTSTRAP_HOST_PLAINTEXT,
             "tls" | "mtls" => LOCAL_KAFKA_BOOTSTRAP_HOST_TLS,
+            "sasl_plaintext" => LOCAL_KAFKA_BOOTSTRAP_HOST_SASL_PLAINTEXT,
             other => panic!("Unsupported KAFKA_CLIENT_SECURE={other:?}"),
         }
     }
@@ -101,6 +104,10 @@ mod integration {
             KafkaClient::new(hosts)
         };
 
+        if secure_mode() == "sasl_plaintext" {
+            client.set_sasl_config(Some(SaslConfig::plain("kafkang", "kafkang-secret")));
+        }
+
         client.set_group_offset_storage(Some(GroupOffsetStorage::Kafka));
 
         let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
@@ -117,6 +124,7 @@ mod integration {
             "" => None,
             "tls" => Some(tls_security_config()),
             "mtls" => Some(mtls_security_config()),
+            "sasl_plaintext" => None,
             other => panic!("Unsupported KAFKA_CLIENT_SECURE={other:?}"),
         }
     }
