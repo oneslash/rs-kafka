@@ -2,11 +2,13 @@ use super::*;
 
 use kafka::error;
 use kafka::producer::Record;
+use std::thread;
+use std::time::Duration;
 
 /// Tests that consuming one message works
 #[test]
 fn test_consumer_poll() {
-    tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
 
     // poll once to set a position in the topic
     let mut consumer = test_consumer();
@@ -27,9 +29,20 @@ fn test_consumer_poll() {
         ))
         .unwrap();
 
-    messages = consumer.poll().unwrap();
-    let mut messages_iter = messages.iter();
-    let message_set = messages_iter.next().unwrap();
+    // Poll until the produced message becomes visible (Kafka is async).
+    for _ in 0..50 {
+        let polled = consumer.poll().unwrap();
+        if !polled.is_empty() {
+            messages = polled;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let message_set = messages
+        .iter()
+        .next()
+        .expect("timed out waiting for consumer.poll() to return a message set");
 
     assert_eq!(
         1,
@@ -47,7 +60,7 @@ fn test_consumer_poll() {
 /// Test Consumer::commit_messageset
 #[test]
 fn test_consumer_commit_messageset() {
-    tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
 
     let mut consumer = test_consumer();
 
@@ -79,7 +92,7 @@ fn test_consumer_commit_messageset() {
         for ms in consumer.poll().unwrap().iter() {
             let messages = ms.messages();
             num_messages += messages.len();
-            consumer.consume_messageset(ms).unwrap();
+            consumer.consume_messageset(&ms).unwrap();
         }
 
         consumer.commit_consumed().unwrap();
@@ -129,7 +142,7 @@ fn test_consumer_commit_messageset() {
 /// message sets, nothing is committed.
 #[test]
 fn test_consumer_commit_messageset_no_consumes() {
-    tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
 
     let mut consumer = test_consumer();
 

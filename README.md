@@ -29,10 +29,14 @@ To build kafka-rust the usual `cargo build` should suffice. The crate
 supports various features which can be turned off at compile time.
 See kafka-rust's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/manifest.html#the-features-section).
 
-## Supported Kafka version
+## Supported Kafka versions
 
-`kafka-rust` is tested for compatibility with a select few Kafka versions from 0.8.2 to 3.1.0. However,
-not all features from Kafka 0.9 and newer are supported yet.
+`kafka-rust` is tested in CI against the following Kafka versions:
+
+- 3.8.1
+- 3.9.1
+- 4.0.1
+- 4.1.0
 
 ## Examples
 

@@ -64,7 +64,7 @@ mod integration {
     /// its metadata so it is ready to use.
     pub(crate) fn new_ready_kafka_client() -> KafkaClient {
         let mut client = new_kafka_client();
-        client.load_metadata_all();
+        client.load_metadata_all().unwrap();
         client
     }
 
@@ -108,11 +108,9 @@ mod integration {
     ) -> Result<SecurityConfig, openssl::error::ErrorStack> {
         let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
 
-        #[cfg(openssl110)]
-        builder.set_cipher_list("DEFAULT@SECLEVEL=0").unwrap();
-
-        #[cfg(not(openssl110))]
-        builder.set_cipher_list("DEFAULT").unwrap();
+        if builder.set_cipher_list("DEFAULT@SECLEVEL=0").is_err() {
+            builder.set_cipher_list("DEFAULT").unwrap();
+        }
 
         builder.set_certificate(&*keypair).unwrap();
         builder.set_verify(SslVerifyMode::NONE);

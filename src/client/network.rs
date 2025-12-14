@@ -4,17 +4,19 @@
 //! through re-exports of individual items from within
 //! `kafka::client`.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Write};
-use std::mem;
+use std::io::{Cursor, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "security")]
 use openssl::ssl::{Error as SslError, HandshakeError, SslConnector};
 
+use crate::codecs::{FromByte, ToByte};
 use crate::error::Result;
+use crate::protocol::{ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions};
 
 // --------------------------------------------------------------------
 
@@ -86,6 +88,7 @@ impl<T: fmt::Debug> fmt::Debug for Pooled<T> {
 
 #[derive(Debug)]
 pub struct Config {
+    client_id: String,
     rw_timeout: Option<Duration>,
     idle_timeout: Duration,
     #[cfg(feature = "security")]
@@ -95,15 +98,15 @@ pub struct Config {
 impl Config {
     #[cfg(not(feature = "security"))]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        KafkaConnection::new(id, host, self.rw_timeout).map(|c| {
-            debug!("Established: {:?}", c);
-            c
-        })
+        let mut conn = KafkaConnection::new(id, host, self.rw_timeout)?;
+        conn.negotiate_api_versions(id as i32, &self.client_id)?;
+        debug!("Established: {:?}", conn);
+        Ok(conn)
     }
 
     #[cfg(feature = "security")]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        KafkaConnection::new(
+        let mut conn = KafkaConnection::new(
             id,
             host,
             self.rw_timeout,
@@ -111,10 +114,10 @@ impl Config {
                 .as_ref()
                 .map(|c| (c.connector.clone(), c.verify_hostname)),
         )
-        .map(|c| {
-            debug!("Established: {:?}", c);
-            c
-        })
+        ?;
+        conn.negotiate_api_versions(id as i32, &self.client_id)?;
+        debug!("Established: {:?}", conn);
+        Ok(conn)
     }
 }
 
@@ -144,11 +147,12 @@ pub struct Connections {
 
 impl Connections {
     #[cfg(not(feature = "security"))]
-    pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
+    pub fn new(client_id: String, rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Connections {
             conns: HashMap::new(),
             state: State::new(),
             config: Config {
+                client_id,
                 rw_timeout,
                 idle_timeout,
             },
@@ -156,12 +160,13 @@ impl Connections {
     }
 
     #[cfg(feature = "security")]
-    pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
-        Self::new_with_security(rw_timeout, idle_timeout, None)
+    pub fn new(client_id: String, rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
+        Self::new_with_security(client_id, rw_timeout, idle_timeout, None)
     }
 
     #[cfg(feature = "security")]
     pub fn new_with_security(
+        client_id: String,
         rw_timeout: Option<Duration>,
         idle_timeout: Duration,
         security: Option<SecurityConfig>,
@@ -170,11 +175,16 @@ impl Connections {
             conns: HashMap::new(),
             state: State::new(),
             config: Config {
+                client_id,
                 rw_timeout,
                 idle_timeout,
                 security_config: security,
             },
         }
+    }
+
+    pub fn set_client_id(&mut self, client_id: String) {
+        self.config.client_id = client_id;
     }
 
     pub fn set_idle_timeout(&mut self, idle_timeout: Duration) {
@@ -186,27 +196,23 @@ impl Connections {
     }
 
     pub fn get_conn<'a>(&'a mut self, host: &str, now: Instant) -> Result<&'a mut KafkaConnection> {
-        if let Some(conn) = self.conns.get_mut(host) {
-            if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
-                debug!("Idle timeout reached: {:?}", conn.item);
-                let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
-                let _ = conn.item.shutdown();
-                conn.item = new_conn;
+        match self.conns.entry(host.to_owned()) {
+            Entry::Occupied(entry) => {
+                let conn = entry.into_mut();
+                if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
+                    debug!("Idle timeout reached: {:?}", conn.item);
+                    let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
+                    let _ = conn.item.shutdown();
+                    conn.item = new_conn;
+                }
+                conn.last_checkout = now;
+                Ok(&mut conn.item)
             }
-            conn.last_checkout = now;
-            let kconn: &mut KafkaConnection = &mut conn.item;
-            // ~ decouple the lifetimes to make the borrowck happy;
-            // this is safe since we're immediately returning the
-            // reference and the rest of the code in this method is
-            // not affected
-            return Ok(unsafe { mem::transmute(kconn) });
+            Entry::Vacant(entry) => {
+                let cid = self.state.next_conn_id();
+                Ok(&mut entry.insert(Pooled::new(now, self.config.new_conn(cid, host)?)).item)
+            }
         }
-        let cid = self.state.next_conn_id();
-        self.conns.insert(
-            host.to_owned(),
-            Pooled::new(now, self.config.new_conn(cid, host)?),
-        );
-        Ok(&mut self.conns.get_mut(host).unwrap().item)
     }
 
     pub fn get_conn_any(&mut self, now: Instant) -> Option<&mut KafkaConnection> {
@@ -329,16 +335,18 @@ pub struct KafkaConnection {
     host: String,
     // the (wrapped) tcp stream
     stream: KafkaStream,
+    broker_api_versions: Option<BrokerApiVersions>,
 }
 
 impl fmt::Debug for KafkaConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "KafkaConnection {{ id: {}, secured: {}, host: \"{}\" }}",
+            "KafkaConnection {{ id: {}, secured: {}, host: \"{}\", api_versions: {} }}",
             self.id,
             self.stream.is_secured(),
-            self.host
+            self.host,
+            self.broker_api_versions.is_some()
         )
     }
 }
@@ -368,6 +376,18 @@ impl KafkaConnection {
         r.map_err(From::from)
     }
 
+    fn negotiate_api_versions(&mut self, correlation_id: i32, client_id: &str) -> Result<()> {
+        let req = ApiVersionsRequest::new(correlation_id, client_id);
+        __send_request(self, req)?;
+        let resp = __get_response::<ApiVersionsResponse>(self)?;
+        let versions = resp.into_broker_api_versions()?;
+        let _ = versions.select_highest_common_version(0, &[4])?; // Produce v4
+        let _ = versions.select_highest_common_version(1, &[4])?; // Fetch v4
+        let _ = versions.select_highest_common_version(18, &[2])?; // ApiVersions v2
+        self.broker_api_versions = Some(versions);
+        Ok(())
+    }
+
     fn from_stream(
         stream: KafkaStream,
         id: u32,
@@ -380,6 +400,7 @@ impl KafkaConnection {
             id,
             host: host.to_owned(),
             stream,
+            broker_api_versions: None,
         })
     }
 
@@ -422,4 +443,25 @@ impl KafkaConnection {
         };
         KafkaConnection::from_stream(stream, id, host, rw_timeout)
     }
+}
+
+fn __send_request<T: ToByte>(conn: &mut KafkaConnection, request: T) -> Result<usize> {
+    let mut buffer = Vec::with_capacity(4);
+    buffer.extend_from_slice(&[0, 0, 0, 0]);
+    request.encode(&mut buffer)?;
+    let size = buffer.len() as i32 - 4;
+    size.encode(&mut &mut buffer[..])?;
+    conn.send(&buffer)
+}
+
+fn __get_response<T: FromByte>(conn: &mut KafkaConnection) -> Result<T::R> {
+    let size = __get_response_size(conn)?;
+    let resp = conn.read_exact_alloc(size as u64)?;
+    T::decode_new(&mut Cursor::new(resp))
+}
+
+fn __get_response_size(conn: &mut KafkaConnection) -> Result<i32> {
+    let mut buf = [0u8; 4];
+    conn.read_exact(&mut buf)?;
+    i32::decode_new(&mut Cursor::new(&buf))
 }

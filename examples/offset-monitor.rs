@@ -158,7 +158,6 @@ impl State {
 struct Printer<W> {
     out: W,
 
-    timefmt: String,
     fmt_buf: String,
     out_buf: String,
 
@@ -176,7 +175,6 @@ impl<W: Write> Printer<W> {
     fn new(out: W, cfg: &Config) -> Printer<W> {
         Printer {
             out,
-            timefmt: "%H:%M:%S".into(),
             fmt_buf: String::with_capacity(30),
             out_buf: String::with_capacity(160),
             time_width: 10,

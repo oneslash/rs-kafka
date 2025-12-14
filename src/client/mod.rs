@@ -9,7 +9,6 @@ use std::collections::hash_map;
 use std::collections::hash_map::HashMap;
 use std::io::Cursor;
 use std::iter::Iterator;
-use std::mem;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -185,11 +184,7 @@ impl GroupOffsetStorage {
     fn offset_commit_version(self) -> protocol::OffsetCommitVersion {
         match self {
             GroupOffsetStorage::Zookeeper => protocol::OffsetCommitVersion::V0,
-            // ~ if we knew we'll be communicating with a kafka 0.9+
-            // broker we could set the commit-version to V2; however,
-            // since we still want to support Kafka 0.8.2 versions,
-            // we'll go with the less efficient but safe option V1.
-            GroupOffsetStorage::Kafka => protocol::OffsetCommitVersion::V1,
+            GroupOffsetStorage::Kafka => protocol::OffsetCommitVersion::V2,
         }
     }
 }
@@ -423,6 +418,7 @@ impl KafkaClient {
                 producer_timestamp: DEFAULT_PRODUCER_TIMESTAMP,
             },
             conn_pool: network::Connections::new(
+                String::new(),
                 default_conn_rw_timeout(),
                 Duration::from_millis(DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS),
             ),
@@ -493,6 +489,7 @@ impl KafkaClient {
                 producer_timestamp: DEFAULT_PRODUCER_TIMESTAMP,
             },
             conn_pool: network::Connections::new_with_security(
+                String::new(),
                 default_conn_rw_timeout(),
                 Duration::from_millis(DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS),
                 Some(security),
@@ -517,6 +514,7 @@ impl KafkaClient {
     /// Kafka brokers write out this client id to their
     /// request/response trace log - if configured appropriately.
     pub fn set_client_id(&mut self, client_id: String) {
+        self.conn_pool.set_client_id(client_id.clone());
         self.config.client_id = client_id;
     }
 
@@ -894,81 +892,21 @@ impl KafkaClient {
         topics: &[T],
         offset: FetchOffset,
     ) -> Result<HashMap<String, Vec<PartitionOffset>>> {
-        let time = offset.to_kafka_value();
-        let n_topics = topics.len();
-
-        let state = &mut self.state;
-        let correlation = state.next_correlation_id();
-
-        // Map topic and partition to the corresponding broker
-        let config = &self.config;
-        let mut reqs: HashMap<&str, protocol::OffsetRequest<'_>> = HashMap::with_capacity(n_topics);
-        for topic in topics {
-            let topic = topic.as_ref();
-            if let Some(ps) = state.partitions_for(topic) {
-                for (id, host) in ps
-                    .iter()
-                    .filter_map(|(id, p)| p.broker(state).map(|b| (id, b.host())))
-                {
-                    let entry = reqs.entry(host).or_insert_with(|| {
-                        protocol::OffsetRequest::new(correlation, &config.client_id)
-                    });
-                    entry.add(topic, id, time);
-                }
-            }
-        }
-
-        // Call each broker with the request formed earlier
-        let now = Instant::now();
-        let mut res: HashMap<String, Vec<PartitionOffset>> = HashMap::with_capacity(n_topics);
-        for (host, req) in reqs {
-            let resp =
-                __send_receive::<_, protocol::OffsetResponse>(&mut self.conn_pool, host, now, req)?;
-            for tp in resp.topic_partitions {
-                let mut entry = res.entry(tp.topic);
-                let mut new_resp_offsets = None;
-                let mut err = None;
-                // Use an explicit scope here to allow insertion into a vacant entry
-                // below
-                {
-                    // Return a &mut to the response we will be collecting into to
-                    // return from this function. If there are some responses we have
-                    // already prepared, keep collecting into that; otherwise, make a
-                    // new collection to return.
-                    let resp_offsets = match entry {
-                        hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
-                        hash_map::Entry::Vacant(_) => {
-                            new_resp_offsets.get_or_insert(Vec::with_capacity(tp.partitions.len()))
-                        }
-                    };
-                    for p in tp.partitions {
-                        let partition_offset = match p.to_offset() {
-                            Ok(po) => po,
-                            Err(code) => {
-                                err = Some((p.partition, code));
-                                break;
-                            }
-                        };
-                        resp_offsets.push(partition_offset);
-                    }
-                }
-                if let Some((partition, code)) = err {
-                    let topic = KafkaClient::get_key_from_entry(entry);
-                    return Err(Error::TopicPartitionError {
-                        topic_name: topic,
-                        partition_id: partition,
-                        error_code: code,
-                    });
-                }
-                if let hash_map::Entry::Vacant(e) = entry {
-                    // unwrap is ok because if it is Vacant, it would have
-                    // been made into a Some above
-                    e.insert(new_resp_offsets.unwrap());
-                }
-            }
-        }
-
-        Ok(res)
+        let res = self.list_offsets(topics, offset)?;
+        Ok(res
+            .into_iter()
+            .map(|(topic, offs)| {
+                (
+                    topic,
+                    offs.into_iter()
+                        .map(|o| PartitionOffset {
+                            partition: o.partition,
+                            offset: o.offset,
+                        })
+                        .collect(),
+                )
+            })
+            .collect())
     }
 
     /// Fetch offsets for a list of topics
@@ -976,12 +914,12 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use kafka::client::{FetchOffset, KafkaClient};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics = vec!["test-topic".to_string()];
-    /// let offsets = client.list_offsets(&s, FetchOffset::ByTime(1698425676797));
+    /// let offsets = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797));
     /// ```
     ///
     /// Returns a mapping of topic name to `TimestampedPartitionOffset`s.
@@ -1130,11 +1068,11 @@ impl KafkaClient {
     /// to make a copy of the message data.
     ///
     /// * This method transparently uncompresses messages (while Kafka
-    /// might sent them in compressed format.)
+    ///   might sent them in compressed format.)
     ///
     /// * This method ensures to skip messages with a lower offset
-    /// than requested (while Kafka might for efficiency reasons sent
-    /// messages with a lower offset.)
+    ///   than requested (while Kafka might for efficiency reasons sent
+    ///   messages with a lower offset.)
     ///
     /// Note: before using this method consider using
     /// `kafka::consumer::Consumer` instead which provides an easier
@@ -1197,11 +1135,12 @@ impl KafkaClient {
             if let Some(broker) = state.find_broker(inp.topic, inp.partition) {
                 reqs.entry(broker)
                     .or_insert_with(|| {
-                        protocol::FetchRequest::new(
+                        protocol::FetchRequest::new_v4(
                             correlation,
                             &config.client_id,
                             config.fetch_max_wait_time,
                             config.fetch_min_bytes,
+                            i32::MAX,
                         )
                     })
                     .add(
@@ -1265,10 +1204,8 @@ impl KafkaClient {
     ///
     /// The return value will contain a vector of topic, partition,
     /// offset and error if any OR error:Error.
-
     // XXX rework signaling an error; note that we need to either return the
     // messages which kafka failed to accept or otherwise tell the client about them
-
     pub fn produce_messages<'a, 'b, I, J>(
         &mut self,
         acks: RequiredAcks,
@@ -1512,47 +1449,47 @@ fn __get_group_coordinator<'a>(
     config: &ClientConfig,
     now: Instant,
 ) -> Result<&'a str> {
-    if let Some(host) = state.group_coordinator(group) {
-        // ~ decouple the lifetimes to make borrowck happy;
-        // this is actually safe since we're immediately
-        // returning this, so the follow up code is not
-        // affected here
-        return Ok(unsafe { mem::transmute(host) });
-    }
-    let correlation_id = state.next_correlation_id();
-    let req = protocol::GroupCoordinatorRequest::new(group, correlation_id, &config.client_id);
-    let mut attempt = 1;
-    loop {
-        // ~ idealy we'd make this work even if `load_metadata` has not
-        // been called yet; if there are no connections available we can
-        // try connecting to the user specified bootstrap server similar
-        // to the way `load_metadata` works.
-        let conn = conn_pool.get_conn_any(now).expect("available connection");
-        debug!(
-            "get_group_coordinator: asking for coordinator of '{}' on: {:?}",
-            group, conn
-        );
-        let r = __send_receive_conn::<_, protocol::GroupCoordinatorResponse>(conn, &req)?;
-        let retry_code = match r.into_result() {
-            Ok(r) => {
-                return Ok(state.set_group_coordinator(group, &r));
-            }
-            Err(Error::Kafka(e @ KafkaCode::GroupCoordinatorNotAvailable)) => e,
-            Err(e) => {
-                return Err(e);
-            }
-        };
-        if attempt < config.retry_max_attempts {
+    if state.group_coordinator(group).is_none() {
+        let correlation_id = state.next_correlation_id();
+        let req = protocol::GroupCoordinatorRequest::new(group, correlation_id, &config.client_id);
+        let mut attempt = 1;
+        loop {
+            // ~ idealy we'd make this work even if `load_metadata` has not
+            // been called yet; if there are no connections available we can
+            // try connecting to the user specified bootstrap server similar
+            // to the way `load_metadata` works.
+            let conn = conn_pool.get_conn_any(now).expect("available connection");
             debug!(
-                "get_group_coordinator: will retry request (c: {}) due to: {:?}",
-                req.header.correlation_id, retry_code
+                "get_group_coordinator: asking for coordinator of '{}' on: {:?}",
+                group, conn
             );
-            attempt += 1;
-            __retry_sleep(config);
-        } else {
-            return Err(Error::Kafka(retry_code));
+            let r = __send_receive_conn::<_, protocol::GroupCoordinatorResponse>(conn, &req)?;
+            let retry_code = match r.into_result() {
+                Ok(r) => {
+                    state.set_group_coordinator(group, &r);
+                    break;
+                }
+                Err(Error::Kafka(e @ KafkaCode::GroupCoordinatorNotAvailable)) => e,
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+            if attempt < config.retry_max_attempts {
+                debug!(
+                    "get_group_coordinator: will retry request (c: {}) due to: {:?}",
+                    req.header.correlation_id, retry_code
+                );
+                attempt += 1;
+                __retry_sleep(config);
+            } else {
+                return Err(Error::Kafka(retry_code));
+            }
         }
     }
+
+    state
+        .group_coordinator(group)
+        .ok_or(Error::Kafka(KafkaCode::GroupCoordinatorNotAvailable))
 }
 
 fn __commit_offsets(
