@@ -124,7 +124,7 @@ impl<'a> SnappyReader<'a> {
         })
     }
 
-    fn _read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    fn read_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
         if self.uncompressed_pos < self.uncompressed_chunk.len() {
             return self.read_uncompressed(buf);
         }
@@ -149,11 +149,11 @@ impl<'a> SnappyReader<'a> {
         let chunk_size = next_i32!(self.compressed_data);
         if chunk_size <= 0 {
             return Err(Error::InvalidSnappy(snap::Error::UnsupportedChunkLength {
-                len: chunk_size as u64,
+                len: u64::from(chunk_size.unsigned_abs()),
                 header: false,
             }));
         }
-        let chunk_size = chunk_size as usize;
+        let chunk_size = usize::try_from(chunk_size).map_err(|_| Error::CodecError)?;
         self.uncompressed_chunk.clear();
         uncompress_to(
             &self.compressed_data[..chunk_size],
@@ -163,7 +163,7 @@ impl<'a> SnappyReader<'a> {
         Ok(true)
     }
 
-    fn _read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
+    fn read_to_end_inner(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
         let init_len = buf.len();
         // ~ first consume already uncompressed and unconsumed data - if any
         if self.uncompressed_pos < self.uncompressed_chunk.len() {
@@ -176,11 +176,12 @@ impl<'a> SnappyReader<'a> {
             let chunk_size = next_i32!(self.compressed_data);
             if chunk_size <= 0 {
                 return Err(Error::InvalidSnappy(snap::Error::UnsupportedChunkLength {
-                    len: chunk_size as u64,
+                    len: u64::from(chunk_size.unsigned_abs()),
                     header: false,
                 }));
             }
-            let (c1, c2) = self.compressed_data.split_at(chunk_size as usize);
+            let chunk_size = usize::try_from(chunk_size).map_err(|_| Error::CodecError)?;
+            let (c1, c2) = self.compressed_data.split_at(chunk_size);
             uncompress_to(c1, buf)?;
             self.compressed_data = c2;
         }
@@ -200,13 +201,13 @@ macro_rules! to_io_error {
     };
 }
 
-impl<'a> Read for SnappyReader<'a> {
+impl Read for SnappyReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        to_io_error!(self._read(buf))
+        to_io_error!(self.read_inner(buf))
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        to_io_error!(self._read_to_end(buf))
+        to_io_error!(self.read_to_end_inner(buf))
     }
 }
 
@@ -222,10 +223,7 @@ mod tests {
 
     fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
         let mut v = Vec::new();
-        match uncompress_to(src, &mut v) {
-            Ok(_) => Ok(v),
-            Err(e) => Err(e),
-        }
+        uncompress_to(src, &mut v).map(|()| v)
     }
 
     #[test]

@@ -961,7 +961,7 @@ impl KafkaClient {
 
         // Call each broker with the request formed earlier
         let now = Instant::now();
-        let mut res: HashMap<String, Vec<TimestampedPartitionOffset>> =
+        let mut responses: HashMap<String, Vec<TimestampedPartitionOffset>> =
             HashMap::with_capacity(n_topics);
         for (host, req) in reqs {
             let resp = __send_receive::<_, protocol::ListOffsetsResponse>(
@@ -971,7 +971,7 @@ impl KafkaClient {
                 req,
             )?;
             for tp in resp.topics {
-                let mut entry = res.entry(tp.topic);
+                let mut entry = responses.entry(tp.topic);
                 let mut new_resp_offsets = None;
                 let mut err = None;
                 // Use an explicit scope here to allow insertion into a vacant entry
@@ -1010,7 +1010,7 @@ impl KafkaClient {
                 }
             }
         }
-        Ok(res)
+        Ok(responses)
     }
 
     /// Takes ownership back from the given HashMap Entry.
@@ -1640,15 +1640,15 @@ fn __fetch_messages(
     reqs: HashMap<&str, protocol::FetchRequest<'_, '_>>,
 ) -> Result<Vec<fetch::Response>> {
     let now = Instant::now();
-    let mut res = Vec::with_capacity(reqs.len());
+    let mut responses = Vec::with_capacity(reqs.len());
     for (host, req) in reqs {
         let p = protocol::fetch::ResponseParser {
             validate_crc: config.fetch_crc_validation,
             requests: Some(&req),
         };
-        res.push(__z_send_receive(conn_pool, host, now, &req, &p)?);
+        responses.push(__z_send_receive(conn_pool, host, now, &req, &p)?);
     }
-    Ok(res)
+    Ok(responses)
 }
 
 /// ~ carries out the given produce requests and returns the response
@@ -1664,14 +1664,14 @@ fn __produce_messages(
         }
         Ok(vec![])
     } else {
-        let mut res: Vec<ProduceConfirm> = vec![];
+        let mut responses: Vec<ProduceConfirm> = vec![];
         for (host, req) in reqs {
             let resp = __send_receive::<_, protocol::ProduceResponse>(conn_pool, host, now, req)?;
             for tpo in resp.get_response() {
-                res.push(tpo);
+                responses.push(tpo);
             }
         }
-        Ok(res)
+        Ok(responses)
     }
 }
 

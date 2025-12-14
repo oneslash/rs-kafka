@@ -8,9 +8,18 @@
 //!
 //! See module level documentation corresponding to each client individually.
 #![recursion_limit = "128"]
-#![cfg_attr(feature = "nightly", feature(test))]
+#![cfg_attr(all(feature = "nightly", kafka_rust_nightly), feature(test))]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines
+)]
 
 #[macro_use]
 extern crate tracing;
@@ -18,7 +27,7 @@ extern crate tracing;
 #[cfg(feature = "snappy")]
 extern crate snap;
 
-#[cfg(all(test, feature = "nightly"))]
+#[cfg(all(test, feature = "nightly", kafka_rust_nightly))]
 extern crate test;
 
 pub mod client;

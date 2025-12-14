@@ -264,7 +264,9 @@ impl TlsConnectorBuilder {
             self.client_key,
         )?;
 
-        config_verify_hostname.alpn_protocols = self.alpn_protocols.clone();
+        config_verify_hostname
+            .alpn_protocols
+            .clone_from(&self.alpn_protocols);
         config_no_hostname_verification.alpn_protocols = self.alpn_protocols;
 
         Ok(TlsConnector {
@@ -429,10 +431,10 @@ pub(crate) fn connect(
         tcp.set_write_timeout(Some(timeout))?;
     }
 
-    let server_name = security
-        .server_name_override()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| extract_host(host).to_owned());
+    let server_name = security.server_name_override().map_or_else(
+        || extract_host(host).to_owned(),
+        ToOwned::to_owned,
+    );
 
     let server_name = ServerName::try_from(server_name)
         .map_err(|_| crate::Error::Tls(TlsError::InvalidServerName))?;

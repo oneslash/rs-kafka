@@ -73,7 +73,7 @@ impl<'a> Topics<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Topics<'a> {
+impl fmt::Debug for Topics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Topics {{ topics: [")?;
         let mut ts = self.iter();
@@ -159,7 +159,7 @@ impl<'a> Topic<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Topic<'a> {
+impl fmt::Debug for Topic<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -220,7 +220,7 @@ impl<'a> Partitions<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Partitions<'a> {
+impl fmt::Debug for Partitions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Partitions {{ [")?;
         let mut ps = self.iter();
@@ -289,7 +289,7 @@ impl<'a> Iterator for PartitionIter<'a> {
 /// more directly through `partition.is_available()`.
 pub struct Partition<'a> {
     state: &'a ClientState,
-    partition: &'a TopicPartition,
+    topic_partition: &'a TopicPartition,
     id: i32,
 }
 
@@ -297,7 +297,7 @@ impl<'a> Partition<'a> {
     fn new(state: &'a ClientState, partition: &'a TopicPartition, id: i32) -> Partition<'a> {
         Self {
             state,
-            partition,
+            topic_partition: partition,
             id,
         }
     }
@@ -314,7 +314,7 @@ impl<'a> Partition<'a> {
     #[inline]
     #[must_use]
     pub fn leader(&self) -> Option<&'a Broker> {
-        self.partition.broker(self.state)
+        self.topic_partition.broker(self.state)
     }
 
     /// Determines whether this partition is currently "available".
@@ -325,7 +325,7 @@ impl<'a> Partition<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Partition<'a> {
+impl fmt::Debug for Partition<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

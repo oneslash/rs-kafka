@@ -54,7 +54,7 @@ pub struct Config {
     rw_timeout: Option<Duration>,
     idle_timeout: Duration,
     #[cfg(feature = "security")]
-    security_config: Option<SecurityConfig>,
+    security: Option<SecurityConfig>,
 }
 
 impl Config {
@@ -69,7 +69,7 @@ impl Config {
     #[cfg(feature = "security")]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         let mut conn =
-            KafkaConnection::new(id, host, self.rw_timeout, self.security_config.as_ref())?;
+            KafkaConnection::new(id, host, self.rw_timeout, self.security.as_ref())?;
         conn.negotiate_api_versions(id as i32, &self.client_id)?;
         debug!("Established: {:?}", conn);
         Ok(conn)
@@ -133,7 +133,7 @@ impl Connections {
                 client_id,
                 rw_timeout,
                 idle_timeout,
-                security_config: security,
+                security,
             },
         }
     }
@@ -225,7 +225,7 @@ mod tlsed {
 
     pub enum KafkaStream {
         Plain(TcpStream),
-        Tls(TlsStream),
+        Tls(Box<TlsStream>),
     }
 
     impl IsSecured for KafkaStream {
@@ -397,7 +397,9 @@ impl KafkaConnection {
     ) -> Result<KafkaConnection> {
         let stream = TcpStream::connect(host)?;
         let stream = match security {
-            Some(security) => KafkaStream::Tls(tls::connect(host, stream, rw_timeout, security)?),
+            Some(security) => KafkaStream::Tls(Box::new(tls::connect(
+                host, stream, rw_timeout, security,
+            )?)),
             None => KafkaStream::Plain(stream),
         };
         KafkaConnection::from_stream(stream, id, host, rw_timeout)
