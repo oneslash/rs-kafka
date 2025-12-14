@@ -25,7 +25,7 @@ pub use crate::protocol::produce::ProducerTimestamp;
 use crate::protocol::produce::ProducerTimestamp;
 
 #[cfg(feature = "security")]
-pub use self::network::SecurityConfig;
+pub use self::tls::{SecurityConfig, TlsConnector, TlsConnectorBuilder};
 
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
@@ -36,6 +36,8 @@ use crate::client_internals::KafkaClientInternals;
 pub mod metadata;
 mod network;
 mod state;
+#[cfg(feature = "security")]
+mod tls;
 
 // ~ re-export (only) certain types from the protocol::fetch module as
 // 'client::fetch'.
@@ -432,31 +434,27 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// extern crate openssl;
     /// extern crate kafka;
     ///
-    /// use openssl::ssl::{SslConnector, SslMethod, SslFiletype, SslVerifyMode};
-    /// use kafka::client::{KafkaClient, SecurityConfig};
+    /// use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
     ///
     /// fn main() {
-    ///     let (key, cert) = ("client.key".to_string(), "client.crt".to_string());
+    ///     // Default TLS connector:
+    ///     // - trusts native OS root CAs (when available)
+    ///     // - falls back to the Mozilla root set (webpki-roots) if native roots are unavailable
+    ///     let connector = TlsConnector::default();
     ///
-    ///     // OpenSSL offers a variety of complex configurations. Here is an example:
-    ///     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
-    ///     builder.set_cipher_list("DEFAULT").unwrap();
-    ///     builder
-    ///         .set_certificate_file(cert, SslFiletype::PEM)
-    ///         .unwrap();
-    ///     builder
-    ///         .set_private_key_file(key, SslFiletype::PEM)
-    ///         .unwrap();
-    ///     builder.check_private_key().unwrap();
-    ///     builder.set_default_verify_paths().unwrap();
-    ///     builder.set_verify(SslVerifyMode::PEER);
-    ///     let connector = builder.build();
+    ///     // For private CAs, append a PEM bundle:
+    ///     // let connector = TlsConnector::builder()
+    ///     //     .add_ca_certs_pem_file("ca.crt.pem")
+    ///     //     .unwrap()
+    ///     //     .build()
+    ///     //     .unwrap();
     ///
-    ///     let mut client = KafkaClient::new_secure(vec!("localhost:9092".to_owned()),
-    ///                                              SecurityConfig::new(connector));
+    ///     let mut client = KafkaClient::new_secure(
+    ///         vec!["localhost:9094".to_owned()],
+    ///         SecurityConfig::new(connector),
+    ///     );
     ///     client.load_metadata_all().unwrap();
     /// }
     /// ```
@@ -464,9 +462,6 @@ impl KafkaClient {
     ///
     /// See also `KafkaClient::load_metadatata_all` and
     /// `KafkaClient::load_metadata` methods, the creates
-    /// [openssl](https://crates.io/crates/openssl)
-    /// and [openssl_verify](https://crates.io/crates/openssl-verify),
-    /// as well as
     /// [Kafka's documentation](https://kafka.apache.org/documentation.html#security_ssl).
     #[cfg(feature = "security")]
     #[must_use]
@@ -849,6 +844,7 @@ impl KafkaClient {
     ) -> Result<protocol::MetadataResponse> {
         let correlation = self.state.next_correlation_id();
         let now = Instant::now();
+        let mut last_error: Option<Error> = None;
 
         for host in &self.config.hosts {
             debug!("fetch_metadata: requesting metadata from {}", host);
@@ -858,18 +854,22 @@ impl KafkaClient {
                         protocol::MetadataRequest::new(correlation, &self.config.client_id, topics);
                     match __send_request(conn, req) {
                         Ok(_) => return __get_response::<protocol::MetadataResponse>(conn),
-                        Err(e) => debug!(
-                            "fetch_metadata: failed to request metadata from {}: {}",
-                            host, e
-                        ),
+                        Err(e) => {
+                            debug!(
+                                "fetch_metadata: failed to request metadata from {}: {}",
+                                host, e
+                            );
+                            last_error = Some(e);
+                        }
                     }
                 }
                 Err(e) => {
                     debug!("fetch_metadata: failed to connect to {}: {}", host, e);
+                    last_error = Some(e);
                 }
             }
         }
-        Err(Error::NoHostReachable)
+        Err(last_error.unwrap_or(Error::NoHostReachable))
     }
 
     /// Fetch offsets for a list of topics

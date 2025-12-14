@@ -12,53 +12,15 @@ use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "security")]
-use openssl::ssl::{Error as SslError, HandshakeError, SslConnector};
+use super::tls;
+#[cfg(feature = "security")]
+use super::tls::SecurityConfig;
+#[cfg(feature = "security")]
+use crate::error::TlsError;
 
 use crate::codecs::{FromByte, ToByte};
 use crate::error::Result;
 use crate::protocol::{ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions};
-
-// --------------------------------------------------------------------
-
-/// Security relevant configuration options for `KafkaClient`.
-// This will be expanded in the future. See #51.
-#[cfg(feature = "security")]
-pub struct SecurityConfig {
-    connector: SslConnector,
-    verify_hostname: bool,
-}
-
-#[cfg(feature = "security")]
-impl SecurityConfig {
-    /// In the future this will also support a kerbos via #51.
-    #[must_use]
-    pub fn new(connector: SslConnector) -> Self {
-        SecurityConfig {
-            connector,
-            verify_hostname: true,
-        }
-    }
-
-    /// Initiates a client-side TLS session with/without performing hostname verification.
-    #[must_use]
-    pub fn with_hostname_verification(self, verify_hostname: bool) -> SecurityConfig {
-        SecurityConfig {
-            verify_hostname,
-            ..self
-        }
-    }
-}
-
-#[cfg(feature = "security")]
-impl fmt::Debug for SecurityConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "SecurityConfig {{ verify_hostname: {} }}",
-            self.verify_hostname
-        )
-    }
-}
 
 // --------------------------------------------------------------------
 
@@ -106,15 +68,8 @@ impl Config {
 
     #[cfg(feature = "security")]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        let mut conn = KafkaConnection::new(
-            id,
-            host,
-            self.rw_timeout,
-            self.security_config
-                .as_ref()
-                .map(|c| (c.connector.clone(), c.verify_hostname)),
-        )
-        ?;
+        let mut conn =
+            KafkaConnection::new(id, host, self.rw_timeout, self.security_config.as_ref())?;
         conn.negotiate_api_versions(id as i32, &self.client_id)?;
         debug!("Established: {:?}", conn);
         Ok(conn)
@@ -257,26 +212,25 @@ impl IsSecured for KafkaStream {
 }
 
 #[cfg(feature = "security")]
-use self::openssled::KafkaStream;
+use self::tlsed::KafkaStream;
 
 #[cfg(feature = "security")]
-mod openssled {
+mod tlsed {
     use std::io::{self, Read, Write};
     use std::net::{Shutdown, TcpStream};
     use std::time::Duration;
 
-    use openssl::ssl::SslStream;
-
     use super::IsSecured;
+    use crate::client::tls::TlsStream;
 
     pub enum KafkaStream {
         Plain(TcpStream),
-        Ssl(SslStream<TcpStream>),
+        Tls(TlsStream),
     }
 
     impl IsSecured for KafkaStream {
         fn is_secured(&self) -> bool {
-            matches!(self, KafkaStream::Ssl(_))
+            matches!(self, KafkaStream::Tls(_))
         }
     }
 
@@ -284,7 +238,7 @@ mod openssled {
         fn get_ref(&self) -> &TcpStream {
             match *self {
                 KafkaStream::Plain(ref s) => s,
-                KafkaStream::Ssl(ref s) => s.get_ref(),
+                KafkaStream::Tls(ref s) => s.get_ref(),
             }
         }
 
@@ -305,7 +259,7 @@ mod openssled {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             match *self {
                 KafkaStream::Plain(ref mut s) => s.read(buf),
-                KafkaStream::Ssl(ref mut s) => s.read(buf),
+                KafkaStream::Tls(ref mut s) => s.read(buf),
             }
         }
     }
@@ -314,13 +268,13 @@ mod openssled {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             match *self {
                 KafkaStream::Plain(ref mut s) => s.write(buf),
-                KafkaStream::Ssl(ref mut s) => s.write(buf),
+                KafkaStream::Tls(ref mut s) => s.write(buf),
             }
         }
         fn flush(&mut self) -> io::Result<()> {
             match *self {
                 KafkaStream::Plain(ref mut s) => s.flush(),
-                KafkaStream::Ssl(ref mut s) => s.flush(),
+                KafkaStream::Tls(ref mut s) => s.flush(),
             }
         }
     }
@@ -352,13 +306,38 @@ impl fmt::Debug for KafkaConnection {
 }
 
 impl KafkaConnection {
+    #[cfg(feature = "security")]
+    fn map_tls_io_error(err: std::io::Error) -> crate::Error {
+        if err.kind() == std::io::ErrorKind::InvalidData {
+            let kind = err.kind();
+            if let Some(inner) = err.into_inner() {
+                match inner.downcast::<rustls::Error>() {
+                    Ok(rustls_err) => {
+                        return crate::Error::Tls(TlsError::HandshakeFailed(rustls_err));
+                    }
+                    Err(inner) => return crate::Error::Io(std::io::Error::new(kind, inner)),
+                }
+            }
+            return crate::Error::Io(std::io::Error::new(kind, "TLS error"));
+        }
+        crate::Error::Io(err)
+    }
+
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
+        #[cfg(feature = "security")]
+        let r = self.stream.write(msg).map_err(KafkaConnection::map_tls_io_error);
+        #[cfg(not(feature = "security"))]
         let r = self.stream.write(msg).map_err(From::from);
         trace!("Sent {} bytes to: {:?} => {:?}", msg.len(), self, r);
         r
     }
 
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+        #[cfg(feature = "security")]
+        let r = (self.stream)
+            .read_exact(buf)
+            .map_err(KafkaConnection::map_tls_io_error);
+        #[cfg(not(feature = "security"))]
         let r = (self.stream).read_exact(buf).map_err(From::from);
         trace!("Read {} bytes from: {:?} => {:?}", buf.len(), self, r);
         r
@@ -414,31 +393,11 @@ impl KafkaConnection {
         id: u32,
         host: &str,
         rw_timeout: Option<Duration>,
-        security: Option<(SslConnector, bool)>,
+        security: Option<&SecurityConfig>,
     ) -> Result<KafkaConnection> {
-        use crate::Error;
-
         let stream = TcpStream::connect(host)?;
         let stream = match security {
-            Some((connector, verify_hostname)) => {
-                if !verify_hostname {
-                    connector
-                        .configure()
-                        .map_err(SslError::from)?
-                        .set_verify_hostname(false);
-                }
-                let domain = match host.rfind(':') {
-                    None => host,
-                    Some(i) => &host[..i],
-                };
-                let connection = connector.connect(domain, stream).map_err(|err| match err {
-                    HandshakeError::SetupFailure(err) => Error::from(SslError::from(err)),
-                    HandshakeError::Failure(err) | HandshakeError::WouldBlock(err) => {
-                        Error::from(err.into_error())
-                    }
-                })?;
-                KafkaStream::Ssl(connection)
-            }
+            Some(security) => KafkaStream::Tls(tls::connect(host, stream, rw_timeout, security)?),
             None => KafkaStream::Plain(stream),
         };
         KafkaConnection::from_stream(stream, id, host, rw_timeout)

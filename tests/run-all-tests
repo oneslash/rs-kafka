@@ -44,6 +44,32 @@ setup() {
     cd "$(dirname $0)"
     stop_docker # just in case something went wrong with a previous shutdown
 
+    # Generate binary TLS artifacts from the PEM fixtures (keystore/truststore).
+    TLS_DIR="./fixtures/tls"
+    TLS_GEN_DIR="${TLS_DIR}/generated"
+    mkdir -p "${TLS_GEN_DIR}"
+
+    # The Kafka image reads `KAFKA_SSL_*` env vars and maps them to `ssl.*` properties.
+    KAFKA_SSL_STORE_PASSWORD="${KAFKA_SSL_STORE_PASSWORD:-kafka-rust-test}"
+    export KAFKA_SSL_STORE_PASSWORD
+
+    rm -f "${TLS_GEN_DIR}/server.keystore.p12" "${TLS_GEN_DIR}/server.truststore.p12"
+    openssl pkcs12 -export \
+      -in "${TLS_DIR}/server.crt.pem" \
+      -inkey "${TLS_DIR}/server.key.pem" \
+      -certfile "${TLS_DIR}/ca.crt.pem" \
+      -name "kafka-rust-test-server" \
+      -out "${TLS_GEN_DIR}/server.keystore.p12" \
+      -passout "pass:${KAFKA_SSL_STORE_PASSWORD}"
+
+    keytool -importcert \
+      -alias "kafka-rust-test-ca" \
+      -file "${TLS_DIR}/ca.crt.pem" \
+      -keystore "${TLS_GEN_DIR}/server.truststore.p12" \
+      -storetype PKCS12 \
+      -storepass "${KAFKA_SSL_STORE_PASSWORD}" \
+      -noprompt
+
     start_docker
   )
 }
@@ -62,7 +88,7 @@ teardown() {
 export RUST_TEST_THREADS=1
 DEFAULT_VERS='3.8.1:3.9.1:4.0.1:4.1.0'
 DEFAULT_COMPRESSIONS='NONE'
-DEFAULT_SECURES=':'
+DEFAULT_SECURES=':tls:mtls'
 
 vers=$@
 
@@ -94,9 +120,10 @@ for ver in $vers; do
       export KAFKA_VER=$ver
       export KAFKA_CLIENT_COMPRESSION=$compression
       export KAFKA_CLIENT_SECURE=$secure
-      if [[ -n "${secure}" ]]; then
-        echo "Skipping SECURES=${secure} (tests/docker-compose.yml currently runs PLAINTEXT only)"
-        continue
+      if [[ "${secure}" == "mtls" ]]; then
+        export KAFKA_SSL_CLIENT_AUTH="required"
+      else
+        export KAFKA_SSL_CLIENT_AUTH="none"
       fi
 
       echo -n "Running tests with KAFKA_VER=$KAFKA_VER, "

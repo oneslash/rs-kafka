@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+- **TLS (feature: `security`) now uses rustls by default**, and default builds no longer depend on OpenSSL.
+  - `SecurityConfig::new` now takes a `TlsConnector` (built via `TlsConnector::default()` or `TlsConnector::builder()`).
+  - `Error::Ssl` has been replaced by `Error::Tls`.
+  - To keep hostname verification enabled (recommended), do nothing; to disable it (insecure), use `SecurityConfig::with_hostname_verification(false)`.
+
 ## [0.9.0] 2022-04-29
 
 - Updated to support Rust 2021

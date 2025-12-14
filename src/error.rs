@@ -1,6 +1,9 @@
 //! Error struct and methods
 
 use std::{io, result, sync::Arc};
+
+#[cfg(feature = "security")]
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub type Result<T> = result::Result<T, Error>;
@@ -12,7 +15,7 @@ pub enum Error {
 
     #[cfg(feature = "security")]
     #[error(transparent)]
-    Ssl(#[from] openssl::ssl::Error),
+    Tls(#[from] TlsError),
 
     #[cfg(feature = "snappy")]
     #[error(transparent)]
@@ -75,6 +78,55 @@ pub enum Error {
 
     #[error("Operation requires group id but no group was set")]
     UnsetGroupId,
+}
+
+#[cfg(feature = "security")]
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("TLS configuration has no trusted root certificates; provide CA certificates or enable native roots")]
+    NoRootCertificates,
+
+    #[error("no certificates found in PEM input")]
+    NoCertificatesFound,
+
+    #[error("no private key found in PEM input")]
+    NoPrivateKeyFound,
+
+    #[error("client authentication is incomplete; provide both a certificate chain and a private key")]
+    IncompleteClientAuthConfig,
+
+    #[error("invalid server name for TLS SNI/hostname verification")]
+    InvalidServerName,
+
+    #[error("failed to read CA certificate file {0:?}")]
+    CaCertReadFailed(PathBuf, #[source] io::Error),
+
+    #[error("failed to parse CA certificates from PEM")]
+    CaCertParseFailed(#[source] io::Error),
+
+    #[error("failed to read client certificate file {0:?}")]
+    ClientCertReadFailed(PathBuf, #[source] io::Error),
+
+    #[error("failed to parse client certificate(s) from PEM")]
+    ClientCertParseFailed(#[source] io::Error),
+
+    #[error("failed to read client private key file {0:?}")]
+    ClientKeyReadFailed(PathBuf, #[source] io::Error),
+
+    #[error("failed to parse client private key from PEM")]
+    ClientKeyParseFailed(#[source] io::Error),
+
+    #[error("failed to build TLS verifier")]
+    VerifierBuildFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("failed to configure client authentication")]
+    ClientAuthConfigFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("failed to create TLS client configuration")]
+    ClientConfigFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("TLS handshake failed")]
+    HandshakeFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Various errors reported by a remote Kafka server.

@@ -3,14 +3,14 @@ services:
     image: apache/kafka:${KAFKA_VER}
     environment:
       # Single-node KRaft broker+controller, with an extra listener
-      # that is advertised as localhost:9092 for tests running on the host.
+      # that is advertised as localhost:* for tests running on the host.
       CLUSTER_ID: ${KAFKA_CLUSTER_ID:-4L6g3nShT-eMCtK--X86sw}
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,SSL_HOST:SSL
+      KAFKA_LISTENERS: PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,SSL_HOST://:9094,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092,SSL_HOST://localhost:9094
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
 
@@ -19,10 +19,22 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # TLS listener (used by KAFKA_CLIENT_SECURE=tls/mtls in tests).
+      KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/tls/server.keystore.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_STORE_PASSWORD:-kafka-rust-test}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_STORE_PASSWORD:-kafka-rust-test}
+      KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/tls/server.truststore.p12
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_SSL_STORE_PASSWORD:-kafka-rust-test}
+      KAFKA_SSL_CLIENT_AUTH: ${KAFKA_SSL_CLIENT_AUTH:-none}
     ports:
       - "9092:9092"
+      - "9094:9094"
     volumes:
       - kafka-data:/var/lib/kafka/data
+      - ./fixtures/tls/generated:/etc/kafka/tls:ro
 
 volumes:
   kafka-data: {}
