@@ -121,7 +121,7 @@ impl PartitionFetchRequest {
     }
 }
 
-impl<'a, 'b> ToByte for FetchRequest<'a, 'b> {
+impl ToByte for FetchRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.header.encode(buffer)?;
         self.replica.encode(buffer)?;
@@ -169,7 +169,7 @@ pub struct ResponseParser<'a, 'b, 'c> {
     pub requests: Option<&'c FetchRequest<'a, 'b>>,
 }
 
-impl<'a, 'b, 'c> super::ResponseParser for ResponseParser<'a, 'b, 'c> {
+impl super::ResponseParser for ResponseParser<'_, '_, '_> {
     type T = Response;
     fn parse(&self, response: Vec<u8>) -> Result<Self::T> {
         Response::from_vec(response, self.requests, self.validate_crc)
@@ -535,7 +535,7 @@ struct ProtocolMessage<'a> {
     value: &'a [u8],
 }
 
-impl<'a> ProtocolMessage<'a> {
+impl ProtocolMessage<'_> {
     /// Parses a raw message from the given byte slice.  Does _not_
     /// handle any compression.
     fn from_slice(raw_data: &[u8], validate_crc: bool) -> Result<ProtocolMessage<'_>> {
@@ -648,7 +648,7 @@ mod tests {
     fn skip_lines(mut lines: &str, mut n: usize) -> &str {
         while n > 0 {
             n -= 1;
-            lines = &lines[lines.find('\n').map(|i| i + 1).unwrap_or(0)..];
+            lines = &lines[lines.find('\n').map_or(0, |i| i + 1)..];
         }
         lines
     }
@@ -793,11 +793,11 @@ mod tests {
         ) {
             Ok(_) => panic!("Expected error, but got successful response!"),
             Err(Error::Kafka(KafkaCode::CorruptMessage)) => {}
-            Err(e) => panic!("Expected KafkaCode::CorruptMessage error, but got: {:?}", e),
+            Err(e) => panic!("Expected KafkaCode::CorruptMessage error, but got: {e:?}"),
         }
     }
 
-    #[cfg(feature = "nightly")]
+    #[cfg(all(feature = "nightly", kafka_rust_nightly))]
     mod benches {
         use test::{black_box, Bencher};
 

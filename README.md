@@ -29,6 +29,16 @@ To build kafka-rust the usual `cargo build` should suffice. The crate
 supports various features which can be turned off at compile time.
 See kafka-rust's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/manifest.html#the-features-section).
 
+## TLS (SSL)
+
+TLS support is enabled by default via the `security` feature and is implemented using `rustls` (no OpenSSL dependency in default builds).
+
+At a high level:
+
+- Use `KafkaClient::new_secure(..)` and pass a `SecurityConfig`.
+- Construct a `TlsConnector` using `TlsConnector::default()` (native roots, with a bundled-root fallback), or use `TlsConnector::builder()` to append a custom CA bundle and/or configure client authentication (mTLS).
+- Migration guide for older OpenSSL-based code: `docs/migration-openssl-to-rustls.md`.
+
 ## Supported Kafka versions
 
 `kafka-rust` is tested in CI against the following Kafka versions:

@@ -37,12 +37,10 @@ fn test_uncompress() {
 }
 
 #[test]
-#[should_panic]
-fn test_uncompress_panic() {
+fn test_uncompress_invalid_data() {
     use std::io::Cursor;
     let msg: Vec<u8> = vec![
         12, 42, 84, 104, 105, 115, 32, 105, 115, 32, 116, 101, 115, 116,
     ];
-    let uncomp_msg = String::from_utf8(uncompress(Cursor::new(msg)).unwrap()).unwrap();
-    assert_eq!(&uncomp_msg[..], "This is test");
+    assert!(uncompress(Cursor::new(msg)).is_err());
 }

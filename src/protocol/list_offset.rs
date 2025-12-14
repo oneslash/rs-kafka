@@ -78,7 +78,7 @@ impl PartitionListOffsetsRequest {
     }
 }
 
-impl<'a> ToByte for ListOffsetsRequest<'a> {
+impl ToByte for ListOffsetsRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -88,7 +88,7 @@ impl<'a> ToByte for ListOffsetsRequest<'a> {
     }
 }
 
-impl<'a> ToByte for TopicListOffsetsRequest<'a> {
+impl ToByte for TopicListOffsetsRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(self.topic.encode(buffer), self.partitions.encode(buffer))
     }

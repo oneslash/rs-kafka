@@ -355,11 +355,11 @@ pub(crate) fn decompress_record_set(record_set: &[u8], validate_crc: bool) -> Re
 
 /// Decodes an uncompressed record set (Kafka `RECORDS`) into individual
 /// messages. Only RecordBatch magic=2 is supported.
-pub fn decode_uncompressed_record_set<'a>(
-    record_set: &'a [u8],
+pub fn decode_uncompressed_record_set(
+    record_set: &[u8],
     req_offset: i64,
     validate_crc: bool,
-) -> Result<Vec<RecordMessage<'a>>> {
+) -> Result<Vec<RecordMessage<'_>>> {
     let mut r = Cursor::new(record_set);
     let mut out = Vec::new();
 

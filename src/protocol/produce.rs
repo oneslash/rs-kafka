@@ -151,7 +151,7 @@ impl<'a> PartitionProduceRequest<'a> {
     }
 }
 
-impl<'a, 'b> ToByte for ProduceRequest<'a, 'b> {
+impl ToByte for ProduceRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -163,22 +163,22 @@ impl<'a, 'b> ToByte for ProduceRequest<'a, 'b> {
     }
 }
 
-impl<'a> ToByte for TopicPartitionProduceRequest<'a> {
+impl ToByte for TopicPartitionProduceRequest<'_> {
     // render: TopicName [Partition MessageSetSize MessageSet]
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.topic.encode(buffer)?;
         (self.partitions.len() as i32).encode(buffer)?;
         for e in &self.partitions {
             #[cfg(not(feature = "producer_timestamp"))]
-            e._encode(buffer, self.compression)?;
+            e.encode_partition(buffer, self.compression)?;
 
             #[cfg(feature = "producer_timestamp")]
             {
                 match self.timestamp {
                     Some(timestamp) => {
-                        e._encode_with_timestamp(buffer, self.compression, timestamp)?
+                        e.encode_partition_with_timestamp(buffer, self.compression, timestamp)?;
                     }
-                    None => e._encode(buffer, self.compression)?,
+                    None => e.encode_partition(buffer, self.compression)?,
                 }
             }
         }
@@ -186,12 +186,12 @@ impl<'a> ToByte for TopicPartitionProduceRequest<'a> {
     }
 }
 
-impl<'a> PartitionProduceRequest<'a> {
+impl PartitionProduceRequest<'_> {
     // render: Partition MessageSetSize MessageSet
     //
     // MessetSet => [Offset MessageSize Message]
     // MessageSets are not preceded by an int32 like other array elements in the protocol.
-    fn _encode<W: Write>(&self, out: &mut W, compression: Compression) -> Result<()> {
+    fn encode_partition<W: Write>(&self, out: &mut W, compression: Compression) -> Result<()> {
         self.partition.encode(out)?;
 
         let mut msgs = Vec::with_capacity(self.messages.len());
@@ -203,18 +203,17 @@ impl<'a> PartitionProduceRequest<'a> {
     }
 
     #[cfg(feature = "producer_timestamp")]
-    fn _encode_with_timestamp<W: Write>(
+    fn encode_partition_with_timestamp<W: Write>(
         &self,
         out: &mut W,
         compression: Compression,
-        timestamp: ProducerTimestamp,
+        _timestamp: ProducerTimestamp,
     ) -> Result<()> {
-        let _ = timestamp;
-        self._encode(out, compression)
+        self.encode_partition(out, compression)
     }
 }
 
-impl<'a> MessageProduceRequest<'a> {
+impl MessageProduceRequest<'_> {
     fn new<'b>(key: Option<&'b [u8]>, value: Option<&'b [u8]>) -> MessageProduceRequest<'b> {
         MessageProduceRequest { key, value }
     }

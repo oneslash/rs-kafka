@@ -72,22 +72,22 @@ const UNKNOWN_BROKER_INDEX: u32 = u32::MAX;
 // constant and/or treat it conditionally.
 #[derive(Debug, Copy, Clone)]
 pub struct BrokerRef {
-    _index: u32,
+    index: u32,
 }
 
 impl BrokerRef {
     // ~ private constructor on purpose
     fn new(index: u32) -> Self {
-        BrokerRef { _index: index }
+        BrokerRef { index }
     }
 
     fn index(self) -> usize {
-        self._index as usize
+        self.index as usize
     }
 
     fn set(&mut self, other: BrokerRef) {
-        if self._index != other._index {
-            self._index = other._index;
+        if self.index != other.index {
+            self.index = other.index;
         }
     }
 
@@ -391,21 +391,21 @@ impl ClientState {
                         group_host, broker.host, broker.node_id
                     );
                 }
-                broker_ref._index = i;
+                broker_ref.index = i;
                 break;
             }
         }
         // ~ if not found, add it to the list of known brokers
-        if broker_ref._index == UNKNOWN_BROKER_INDEX {
-            broker_ref._index = self.brokers.len() as u32;
+        if broker_ref.index == UNKNOWN_BROKER_INDEX {
+            broker_ref.index = self.brokers.len() as u32;
             self.brokers.push(Broker {
                 node_id: gc.broker_id,
                 host: group_host,
             });
         }
         if let Some(br) = self.group_coordinators.get_mut(group) {
-            if br._index != broker_ref._index {
-                br._index = broker_ref._index;
+            if br.index != broker_ref.index {
+                br.index = broker_ref.index;
             }
         }
         self.group_coordinators.insert(group.to_owned(), broker_ref);

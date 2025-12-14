@@ -191,7 +191,7 @@ impl<'a, V> Record<'a, (), V> {
     }
 }
 
-impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'a, K, V> {
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -672,9 +672,9 @@ impl<H: BuildHasher> Partitioner for DefaultPartitioner<H> {
             // ~ partition explicitly defined, trust the user
             return;
         }
-        let partitions = match topics.partitions(rec.topic) {
-            None => return, // ~ unknown topic, this is not the place to deal with it.
-            Some(partitions) => partitions,
+        let Some(partitions) = topics.partitions(rec.topic) else {
+            // ~ unknown topic, this is not the place to deal with it.
+            return;
         };
 
         if let Some(key) = rec.key {
@@ -768,7 +768,7 @@ mod default_partitioner_tests {
             ),
         ]);
 
-        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> = Default::default();
+        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> = DefaultPartitioner::default();
 
         // ~ validate that partitioning by the same key leads to the same
         // partition
@@ -792,7 +792,7 @@ mod default_partitioner_tests {
             self.0
         }
         fn write(&mut self, bytes: &[u8]) {
-            self.0 = bytes[0] as u64;
+            self.0 = u64::from(bytes[0]);
         }
     }
 

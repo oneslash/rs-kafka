@@ -1,7 +1,7 @@
 /// Still to test:
 ///
 /// * compression
-/// * secure connections
+/// * additional compression variants (beyond the CI matrix)
 use super::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ fn flatten_fetched_messages(resps: &Vec<Response>) -> Vec<(&str, i32, &[u8])> {
 
 #[test]
 fn test_kafka_client_load_metadata() {
-    let hosts = vec![LOCAL_KAFKA_BOOTSTRAP_HOST.to_owned()];
+    let hosts = vec![bootstrap_host().to_owned()];
     let mut client = new_kafka_client();
     let client_id = "test-id".to_string();
     client.set_client_id(client_id.clone());

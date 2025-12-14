@@ -5,15 +5,12 @@ fn main() {
 #[cfg(feature = "security")]
 mod example {
     use kafka;
-    use openssl;
     use tracing::info;
 
     use std::env;
     use std::process;
 
-    use self::kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
-
-    use self::openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode};
+    use self::kafka::client::{FetchOffset, KafkaClient, SecurityConfig, TlsConnector};
 
     pub fn main() {
         tracing_subscriber::fmt::init();
@@ -27,37 +24,22 @@ mod example {
             }
         };
 
-        // ~ OpenSSL offers a variety of complex configurations. Here is an example:
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
-        builder.set_cipher_list("DEFAULT").unwrap();
-        builder.set_verify(SslVerifyMode::PEER);
+        let mut builder = TlsConnector::builder();
         if let (Some(ccert), Some(ckey)) = (cfg.client_cert, cfg.client_key) {
             info!("loading cert-file={}, key-file={}", ccert, ckey);
 
-            builder
-                .set_certificate_file(ccert, SslFiletype::PEM)
-                .unwrap();
-            builder
-                .set_private_key_file(ckey, SslFiletype::PEM)
-                .unwrap();
-            builder.check_private_key().unwrap();
+            builder = builder.with_client_auth_pem_files(ccert, ckey).unwrap();
         }
 
         if let Some(ca_cert) = cfg.ca_cert {
             info!("loading ca-file={}", ca_cert);
 
-            builder.set_ca_file(ca_cert).unwrap();
-        } else {
-            // ~ allow client specify the CAs through the default paths:
-            // "These locations are read from the SSL_CERT_FILE and
-            // SSL_CERT_DIR environment variables if present, or defaults
-            // specified at OpenSSL build time otherwise."
-            builder.set_default_verify_paths().unwrap();
+            builder = builder.add_ca_certs_pem_file(ca_cert).unwrap();
         }
 
-        let connector = builder.build();
+        let connector = builder.build().unwrap();
 
-        // ~ instantiate KafkaClient with the previous OpenSSL setup
+        // ~ instantiate KafkaClient with the configured TLS setup
         let mut client = KafkaClient::new_secure(
             cfg.brokers,
             SecurityConfig::new(connector).with_hostname_verification(cfg.verify_hostname),
@@ -75,7 +57,7 @@ mod example {
                 // metadata via a secured connection to one of the
                 // specified brokers
 
-                if client.topics().len() == 0 {
+                if client.topics().is_empty() {
                     println!("No topics available!");
                 } else {
                     // ~ now let's communicate with all the brokers in

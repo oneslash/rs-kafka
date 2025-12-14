@@ -5,38 +5,31 @@ extern crate kafka;
 extern crate rand;
 
 #[cfg(feature = "integration_tests")]
-extern crate openssl;
-
-#[cfg(feature = "integration_tests")]
 #[macro_use]
 extern crate lazy_static;
 
 #[cfg(feature = "integration_tests")]
 mod integration {
-    use std;
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
-    
     use tracing::debug;
 
-    use kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
-
-    use openssl;
-    use openssl::pkey::PKey;
-    use openssl::rsa::Rsa;
-    use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-    use openssl::x509::X509;
+    use kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig, TlsConnector};
 
     mod client;
     mod consumer_producer;
+    mod tls;
 
-    pub const LOCAL_KAFKA_BOOTSTRAP_HOST: &str = "localhost:9092";
+    pub const LOCAL_KAFKA_BOOTSTRAP_HOST_PLAINTEXT: &str = "localhost:9092";
+    pub const LOCAL_KAFKA_BOOTSTRAP_HOST_TLS: &str = "localhost:9094";
+    pub const LOCAL_KAFKA_BOOTSTRAP_HOST_TLS_IP: &str = "127.0.0.1:9094";
+
     pub const TEST_TOPIC_NAME: &str = "kafka-rust-test";
     pub const TEST_TOPIC_NAME_2: &str = "kafka-rust-test2";
     pub const TEST_GROUP_NAME: &str = "kafka-rust-tester";
     pub const TEST_TOPIC_PARTITIONS: [i32; 2] = [0, 1];
     pub const KAFKA_CONSUMER_OFFSETS_TOPIC_NAME: &str = "__consumer_offsets";
-    const RSA_KEY_SIZE: u32 = 4096;
 
     // env vars
     const KAFKA_CLIENT_SECURE: &str = "KAFKA_CLIENT_SECURE";
@@ -60,8 +53,36 @@ mod integration {
         };
     }
 
-    /// Constructs a Kafka client for the integration tests, and loads
-    /// its metadata so it is ready to use.
+    pub(crate) fn secure_mode() -> String {
+        std::env::var(KAFKA_CLIENT_SECURE).unwrap_or_default()
+    }
+
+    pub(crate) fn bootstrap_host() -> &'static str {
+        match secure_mode().as_str() {
+            "" => LOCAL_KAFKA_BOOTSTRAP_HOST_PLAINTEXT,
+            "tls" | "mtls" => LOCAL_KAFKA_BOOTSTRAP_HOST_TLS,
+            other => panic!("Unsupported KAFKA_CLIENT_SECURE={other:?}"),
+        }
+    }
+
+    pub(crate) fn tls_fixture_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls")
+    }
+
+    pub(crate) fn ca_cert_path() -> PathBuf {
+        tls_fixture_dir().join("ca.crt.pem")
+    }
+
+    pub(crate) fn client_cert_path() -> PathBuf {
+        tls_fixture_dir().join("client.crt.pem")
+    }
+
+    pub(crate) fn client_key_path() -> PathBuf {
+        tls_fixture_dir().join("client.key.pem")
+    }
+
+    /// Constructs a Kafka client for the integration tests, and loads its metadata so it is ready
+    /// to use.
     pub(crate) fn new_ready_kafka_client() -> KafkaClient {
         let mut client = new_kafka_client();
         client.load_metadata_all().unwrap();
@@ -70,17 +91,17 @@ mod integration {
 
     /// Constructs a Kafka client for the integration tests.
     pub(crate) fn new_kafka_client() -> KafkaClient {
-        let hosts = vec![LOCAL_KAFKA_BOOTSTRAP_HOST.to_owned()];
+        let hosts = vec![bootstrap_host().to_owned()];
 
         let mut client = if let Some(security_config) = new_security_config() {
-            KafkaClient::new_secure(hosts, security_config.unwrap())
+            KafkaClient::new_secure(hosts, security_config)
         } else {
             KafkaClient::new(hosts)
         };
 
         client.set_group_offset_storage(Some(GroupOffsetStorage::Kafka));
 
-        let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or(String::from(""));
+        let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
         let compression = COMPRESSIONS.get(&*compression).unwrap();
 
         client.set_compression(*compression);
@@ -89,42 +110,34 @@ mod integration {
         client
     }
 
-    /// Returns a new security config if the `KAFKA_CLIENT_SECURE`
-    /// environment variable is set to a non-empty string.
-    pub(crate) fn new_security_config() -> Option<Result<SecurityConfig, openssl::error::ErrorStack>>
-    {
-        match std::env::var_os(KAFKA_CLIENT_SECURE) {
-            Some(ref val) if val.as_os_str() != "" => (),
-            _ => return None,
+    pub(crate) fn new_security_config() -> Option<SecurityConfig> {
+        match secure_mode().as_str() {
+            "" => None,
+            "tls" => Some(tls_security_config()),
+            "mtls" => Some(mtls_security_config()),
+            other => panic!("Unsupported KAFKA_CLIENT_SECURE={other:?}"),
         }
-
-        Some(new_key_pair().and_then(get_security_config))
     }
 
-    /// If the `KAFKA_CLIENT_SECURE` environment variable is set, return a
-    /// `SecurityConfig`.
-    pub(crate) fn get_security_config(
-        keypair: openssl::x509::X509,
-    ) -> Result<SecurityConfig, openssl::error::ErrorStack> {
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
+    fn tls_security_config() -> SecurityConfig {
+        let connector = TlsConnector::builder()
+            .add_ca_certs_pem_file(ca_cert_path())
+            .unwrap()
+            .build()
+            .unwrap();
 
-        if builder.set_cipher_list("DEFAULT@SECLEVEL=0").is_err() {
-            builder.set_cipher_list("DEFAULT").unwrap();
-        }
-
-        builder.set_certificate(&*keypair).unwrap();
-        builder.set_verify(SslVerifyMode::NONE);
-
-        let connector = builder.build();
-        let security_config = SecurityConfig::new(connector);
-        Ok(security_config.with_hostname_verification(false))
+        SecurityConfig::new(connector)
     }
 
-    pub(crate) fn new_key_pair() -> Result<X509, openssl::error::ErrorStack> {
-        let rsa = Rsa::generate(RSA_KEY_SIZE)?;
-        let pkey = PKey::from_rsa(rsa)?;
-        let mut builder = X509::builder()?;
-        builder.set_pubkey(&*pkey)?;
-        Ok(builder.build())
+    fn mtls_security_config() -> SecurityConfig {
+        let connector = TlsConnector::builder()
+            .add_ca_certs_pem_file(ca_cert_path())
+            .unwrap()
+            .with_client_auth_pem_files(client_cert_path(), client_key_path())
+            .unwrap()
+            .build()
+            .unwrap();
+
+        SecurityConfig::new(connector)
     }
 }

@@ -75,23 +75,55 @@ jobs:
         DATA_DIR="$RUNNER_TEMP/kafka-data-${{ matrix.KAFKA_VER }}"
         LOG_DIR="$DATA_DIR/logs"
         CONF="$RUNNER_TEMP/kafka-kraft.properties"
+        TLS_DIR="$RUNNER_TEMP/kafka-tls"
         LOG_FILE="$RUNNER_TEMP/kafka.log"
         PID_FILE="$RUNNER_TEMP/kafka.pid"
 
         rm -rf "$DATA_DIR"
         mkdir -p "$LOG_DIR"
+        rm -rf "$TLS_DIR"
+        mkdir -p "$TLS_DIR"
+
+        # Generate PKCS12 artifacts for the broker from the checked-in PEM fixtures.
+        TLS_FIXTURES="$GITHUB_WORKSPACE/tests/fixtures/tls"
+        TLS_PASS="kafka-rust-test"
+
+        openssl pkcs12 -export \
+          -in "$TLS_FIXTURES/server.crt.pem" \
+          -inkey "$TLS_FIXTURES/server.key.pem" \
+          -certfile "$TLS_FIXTURES/ca.crt.pem" \
+          -name "kafka-rust-test-server" \
+          -out "$TLS_DIR/server.keystore.p12" \
+          -passout "pass:$TLS_PASS"
+
+        keytool -importcert \
+          -alias "kafka-rust-test-ca" \
+          -file "$TLS_FIXTURES/ca.crt.pem" \
+          -keystore "$TLS_DIR/server.truststore.p12" \
+          -storetype PKCS12 \
+          -storepass "$TLS_PASS" \
+          -noprompt
 
         cat > "$CONF" <<EOF
         process.roles=broker,controller
         node.id=1
         controller.quorum.voters=1@127.0.0.1:9093
         controller.listener.names=CONTROLLER
-        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-        listeners=PLAINTEXT://127.0.0.1:9092,CONTROLLER://127.0.0.1:9093
-        advertised.listeners=PLAINTEXT://127.0.0.1:9092
+        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
+        listeners=PLAINTEXT://127.0.0.1:9092,SSL://127.0.0.1:9094,CONTROLLER://127.0.0.1:9093
+        advertised.listeners=PLAINTEXT://127.0.0.1:9092,SSL://localhost:9094
         inter.broker.listener.name=PLAINTEXT
 
         log.dirs=$LOG_DIR
+
+        ssl.keystore.location=$TLS_DIR/server.keystore.p12
+        ssl.keystore.password=$TLS_PASS
+        ssl.key.password=$TLS_PASS
+        ssl.keystore.type=PKCS12
+        ssl.truststore.location=$TLS_DIR/server.truststore.p12
+        ssl.truststore.password=$TLS_PASS
+        ssl.truststore.type=PKCS12
+        ssl.client.auth=none
 
         offsets.topic.replication.factor=1
         transaction.state.log.replication.factor=1
@@ -125,6 +157,12 @@ jobs:
       run: cargo test --features integration_tests
       env:
         KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
+
+    - name: Run tests (TLS)
+      run: cargo test --features integration_tests
+      env:
+        KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
+        KAFKA_CLIENT_SECURE: tls
 
     - name: Show Kafka logs (on failure)
       if: failure()

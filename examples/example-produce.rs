@@ -19,9 +19,9 @@ fn main() {
     }
 }
 
-fn produce_message<'a, 'b>(
-    data: &'a [u8],
-    topic: &'b str,
+fn produce_message(
+    data: &[u8],
+    topic: &str,
     brokers: Vec<String>,
 ) -> Result<(), KafkaError> {
     println!("About to publish a message at {:?} to: {}", brokers, topic);

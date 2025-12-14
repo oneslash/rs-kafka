@@ -26,7 +26,7 @@ impl<'a> ApiVersionsRequest<'a> {
     }
 }
 
-impl<'a> ToByte for ApiVersionsRequest<'a> {
+impl ToByte for ApiVersionsRequest<'_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.header.encode(buffer)
     }
@@ -41,6 +41,7 @@ pub struct ApiVersionRange {
 }
 
 impl ApiVersionRange {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     #[must_use]
     pub fn contains(&self, version: i16) -> bool {
         version >= self.min_version && version <= self.max_version
@@ -208,4 +209,3 @@ mod tests {
         assert!(versions.select_highest_common_version(999, &[0, 1]).is_err());
     }
 }
-
