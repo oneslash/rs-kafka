@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
 
-use super::{HeaderRequest, HeaderResponse, API_KEY_API_VERSIONS};
+use super::{API_KEY_API_VERSIONS, HeaderRequest, HeaderResponse};
 
 const API_VERSIONS_REQUEST_VERSION: i16 = 2;
 
@@ -206,6 +206,10 @@ mod tests {
             4
         );
         assert!(versions.select_highest_common_version(3, &[0]).is_err());
-        assert!(versions.select_highest_common_version(999, &[0, 1]).is_err());
+        assert!(
+            versions
+                .select_highest_common_version(999, &[0, 1])
+                .is_err()
+        );
     }
 }

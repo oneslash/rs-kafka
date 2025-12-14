@@ -4,13 +4,13 @@ fn main() {
 
 #[cfg(feature = "security")]
 mod example {
-    use kafka;
+    use kafkang;
     use tracing::info;
 
     use std::env;
     use std::process;
 
-    use self::kafka::client::{FetchOffset, KafkaClient, SecurityConfig, TlsConnector};
+    use self::kafkang::client::{FetchOffset, KafkaClient, SecurityConfig, TlsConnector};
 
     pub fn main() {
         tracing_subscriber::fmt::init();

@@ -2,10 +2,10 @@
 //!
 //! This module is crate private and not exposed to the public except
 //! through re-exports of individual items from within
-//! `kafka::client`.
+//! `kafkang::client`.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::io::{Cursor, Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -68,8 +68,7 @@ impl Config {
 
     #[cfg(feature = "security")]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        let mut conn =
-            KafkaConnection::new(id, host, self.rw_timeout, self.security.as_ref())?;
+        let mut conn = KafkaConnection::new(id, host, self.rw_timeout, self.security.as_ref())?;
         conn.negotiate_api_versions(id as i32, &self.client_id)?;
         debug!("Established: {:?}", conn);
         Ok(conn)
@@ -102,7 +101,11 @@ pub struct Connections {
 
 impl Connections {
     #[cfg(not(feature = "security"))]
-    pub fn new(client_id: String, rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
+    pub fn new(
+        client_id: String,
+        rw_timeout: Option<Duration>,
+        idle_timeout: Duration,
+    ) -> Connections {
         Connections {
             conns: HashMap::new(),
             state: State::new(),
@@ -115,7 +118,11 @@ impl Connections {
     }
 
     #[cfg(feature = "security")]
-    pub fn new(client_id: String, rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
+    pub fn new(
+        client_id: String,
+        rw_timeout: Option<Duration>,
+        idle_timeout: Duration,
+    ) -> Connections {
         Self::new_with_security(client_id, rw_timeout, idle_timeout, None)
     }
 
@@ -165,7 +172,9 @@ impl Connections {
             }
             Entry::Vacant(entry) => {
                 let cid = self.state.next_conn_id();
-                Ok(&mut entry.insert(Pooled::new(now, self.config.new_conn(cid, host)?)).item)
+                Ok(&mut entry
+                    .insert(Pooled::new(now, self.config.new_conn(cid, host)?))
+                    .item)
             }
         }
     }
@@ -325,7 +334,10 @@ impl KafkaConnection {
 
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
         #[cfg(feature = "security")]
-        let r = self.stream.write(msg).map_err(KafkaConnection::map_tls_io_error);
+        let r = self
+            .stream
+            .write(msg)
+            .map_err(KafkaConnection::map_tls_io_error);
         #[cfg(not(feature = "security"))]
         let r = self.stream.write(msg).map_err(From::from);
         trace!("Sent {} bytes to: {:?} => {:?}", msg.len(), self, r);
@@ -397,9 +409,9 @@ impl KafkaConnection {
     ) -> Result<KafkaConnection> {
         let stream = TcpStream::connect(host)?;
         let stream = match security {
-            Some(security) => KafkaStream::Tls(Box::new(tls::connect(
-                host, stream, rw_timeout, security,
-            )?)),
+            Some(security) => {
+                KafkaStream::Tls(Box::new(tls::connect(host, stream, rw_timeout, security)?))
+            }
             None => KafkaStream::Plain(stream),
         };
         KafkaConnection::from_stream(stream, id, host, rw_timeout)

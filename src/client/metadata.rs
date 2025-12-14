@@ -4,8 +4,8 @@
 use std::collections::hash_map;
 use std::fmt;
 
-use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 use super::KafkaClient;
+use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 
 // public re-export
 pub use super::state::Broker;
@@ -281,10 +281,10 @@ impl<'a> Iterator for PartitionIter<'a> {
 /// Metadata about a particular topic partition.
 ///
 /// A partition can be seen as either available or not by
-/// `kafka-rust`.  "Available" partitions are partitions with an
+/// `kafkang`.  "Available" partitions are partitions with an
 /// assigned leader broker and can be send messages to or fetched
 /// messages from.  Non-available partitions are ignored by
-/// `kafka-rust`.  Whether or not a partition is currently "available"
+/// `kafkang`.  Whether or not a partition is currently "available"
 /// can be determined by testing for `partition.leader().is_some()` or
 /// more directly through `partition.is_available()`.
 pub struct Partition<'a> {

@@ -1,5 +1,5 @@
 #[cfg(feature = "integration_tests")]
-extern crate kafka;
+extern crate kafkang;
 
 #[cfg(feature = "integration_tests")]
 extern crate rand;
@@ -15,7 +15,9 @@ mod integration {
 
     use tracing::debug;
 
-    use kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig, TlsConnector};
+    use kafkang::client::{
+        Compression, GroupOffsetStorage, KafkaClient, SecurityConfig, TlsConnector,
+    };
 
     mod client;
     mod consumer_producer;

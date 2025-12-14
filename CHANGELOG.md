@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+- Migrate crate to Rust 2024 edition and raise the MSRV to 1.85.0 (first stable with edition 2024).
 - **TLS (feature: `security`) now uses rustls by default**, and default builds no longer depend on OpenSSL.
   - `SecurityConfig::new` now takes a `TlsConnector` (built via `TlsConnector::default()` or `TlsConnector::builder()`).
   - `Error::Ssl` has been replaced by `Error::Tls`.

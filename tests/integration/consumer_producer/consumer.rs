@@ -1,7 +1,7 @@
 use super::*;
 
-use kafka::error;
-use kafka::producer::Record;
+use kafkang::error;
+use kafkang::producer::Record;
 use std::thread;
 use std::time::Duration;
 

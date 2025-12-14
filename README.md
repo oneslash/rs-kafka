@@ -1,33 +1,39 @@
-# Kafka Rust Client
+# Kafkang – Kafka Rust Client
 
 ## Project Status
 
-This project is starting to be maintained by John Ward, the current status is that I am bringing the project up to date with the latest dependencies, removing deprecated Rust code and adjusting the tests.
+This project is a fork of the original kafka-rust project; because it was not well maintained and still in alpha, I forked it and created **kafkang**, now hosted at https://github.com/oneslash/rs-kafka.
 
-## New Home
+This project has new features such as:
 
-Welcome to kafka-rust's new home: https://github.com/kafka-rust
+- Rustls instead of OpenSSL
+- Supports only maintained versions of Kafka
+- Rust 2024
 
 ## Documentation
 
-- This library is primarily documented through examples in its [API documentation](https://docs.rs/kafka/).
+- This library is primarily documented through examples in its [API documentation](https://docs.rs/kafkang/).
 - Documentation about Kafka itself can be found at [its project home page](http://kafka.apache.org/).
 
 ## Installation
 
 This crate works with Cargo and is on
-[crates.io](https://crates.io/crates/kafka). The API is currently
-under heavy movement although we do follow semantic versioning (but
+[crates.io](https://crates.io/crates/kafkang). The API is currently
+under active development although we do follow semantic versioning (but
 expect the version number to grow quickly).
 
 ```toml
 [dependencies]
-kafka = "0.10"
+kafkang = "0.1.0"
 ```
 
-To build kafka-rust the usual `cargo build` should suffice. The crate
+To build **kafkang** the usual `cargo build` should suffice. The crate
 supports various features which can be turned off at compile time.
-See kafka-rust's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/manifest.html#the-features-section).
+See kafkang's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/manifest.html#the-features-section).
+
+## Rust version
+
+This crate targets the Rust 2024 edition and requires Rust **1.85.0 or newer** (our MSRV). CI is pinned to that toolchain to keep builds reproducible.
 
 ## TLS (SSL)
 
@@ -41,7 +47,7 @@ At a high level:
 
 ## Supported Kafka versions
 
-`kafka-rust` is tested in CI against the following Kafka versions:
+`kafkang` is tested in CI against the following Kafka versions:
 
 - 3.8.1
 - 3.9.1
@@ -50,14 +56,14 @@ At a high level:
 
 ## Examples
 
-As mentioned, the [cargo generated documentation](https://docs.rs/kafka/) contains some examples.
+As mentioned, the [cargo generated documentation](https://docs.rs/kafkang/) contains some examples.
 Further, standalone, compilable example programs are provided in the
-[examples directory of the repository](https://github.com/spicavigo/kafka-rust/tree/master/examples).
+[examples directory of the repository](https://github.com/oneslash/rs-kafka/tree/master/examples).
 
 ## Consumer
 
 This is a higher-level consumer API for Kafka and is provided by the
-module `kafka::consumer`. It provides convenient offset management
+module `kafkang::consumer`. It provides convenient offset management
 support on behalf of a specified group. This is the API a client
 application of this library wants to use for receiving messages from
 Kafka.
@@ -65,14 +71,14 @@ Kafka.
 ## Producer
 
 This is a higher-level producer API for Kafka and is provided by the
-module `kafka::producer`. It provides convenient automatic partition
+module `kafkang::producer`. It provides convenient automatic partition
 assignment capabilities through partitioners. This is the API a
 client application of this library wants to use for sending messages
 to Kafka.
 
 ## KafkaClient
 
-`KafkaClient` in the `kafka::client` module is the central point of
+`KafkaClient` in the `kafkang::client` module is the central point of
 this API. However, this is a mid-level abstraction for Kafka rather
 suitable for building higher-level APIs. Applications typically want
 to use the already mentioned `Consumer` and `Producer`.
@@ -87,16 +93,16 @@ Nevertheless, the main features or `KafkaClient` are:
 
 ## Bugs / Features / Contributing
 
-There's still a lot of room for improvement on `kafka-rust`.
+There's still a lot of room for improvement on `kafkang`.
 Not everything works right at the moment, and testing coverage could be better.
 **Use it in production at your own risk.** Have a look at the
-[issue tracker](https://github.com/spicavigo/kafka-rust/issues) and feel free
+[issue tracker](https://github.com/oneslash/rs-kafka/issues) and feel free
 to contribute by reporting new problems or contributing to existing
 ones. Any constructive feedback is warmly welcome!
 
 As usually with open source, don't hesitate to fork the repo and
 submit a pull request if you see something to be changed. We'll be
-happy to see `kafka-rust` improving over time.
+happy to see `kafkang` improving over time.
 
 ### Integration tests
 
@@ -134,3 +140,4 @@ for more information.
 
 - [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) is an emerging alternative Kafka client library for Rust based on
   `librdkafka`. rust-rdkafka provides a safe Rust interface to librdkafka.
+- [kafkang](https://github.com/kafka-rust/kafka-rust) - This fork’s repository (original code based on kafka-rust).

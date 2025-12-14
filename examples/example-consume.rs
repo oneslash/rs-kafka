@@ -1,5 +1,5 @@
-use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
-use kafka::error::Error as KafkaError;
+use kafkang::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+use kafkang::error::Error as KafkaError;
 
 /// This program demonstrates consuming messages through a `Consumer`.
 /// This is a convenient client that will fit most use cases.  Note

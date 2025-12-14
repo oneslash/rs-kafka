@@ -9,8 +9,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, RootCertStore};
 
@@ -292,17 +292,20 @@ fn build_root_store(
     }
 
     if include_native_roots {
-        match rustls_native_certs::load_native_certs() {
-            Ok(certs) => {
-                let (added, invalid) = roots.add_parsable_certificates(certs);
-                debug!(
-                    "Loaded native root certificates: added={}, ignored_invalid={}",
-                    added, invalid
-                );
-            }
-            Err(e) => {
-                debug!("Failed to load native root certificates: {e}");
-            }
+        let rustls_native_certs::CertificateResult { certs, errors, .. } =
+            rustls_native_certs::load_native_certs();
+
+        let (added, invalid) = roots.add_parsable_certificates(certs);
+        debug!(
+            "Loaded native root certificates: added={}, ignored_invalid={}",
+            added, invalid
+        );
+
+        if !errors.is_empty() {
+            debug!(
+                "Errors while loading native root certificates: {}",
+                errors.len()
+            );
         }
     }
 
@@ -412,9 +415,7 @@ impl fmt::Debug for SecurityConfig {
             f,
             "SecurityConfig {{ verify_hostname: {}, server_name_override: {} }}",
             self.verify_hostname,
-            self.server_name_override
-                .as_deref()
-                .unwrap_or("<none>")
+            self.server_name_override.as_deref().unwrap_or("<none>")
         )
     }
 }
@@ -431,10 +432,9 @@ pub(crate) fn connect(
         tcp.set_write_timeout(Some(timeout))?;
     }
 
-    let server_name = security.server_name_override().map_or_else(
-        || extract_host(host).to_owned(),
-        ToOwned::to_owned,
-    );
+    let server_name = security
+        .server_name_override()
+        .map_or_else(|| extract_host(host).to_owned(), ToOwned::to_owned);
 
     let server_name = ServerName::try_from(server_name)
         .map_err(|_| crate::Error::Tls(TlsError::InvalidServerName))?;
@@ -477,10 +477,8 @@ pub(crate) fn connect(
 fn extract_host(host: &str) -> &str {
     // Inputs are expected to be "host:port" (or "[ipv6]:port").
     // The returned host is used for SNI and hostname verification.
-    if let Some(rest) = host.strip_prefix('[') {
-        if let Some((h, _)) = rest.split_once(']') {
-            return h;
-        }
+    if let Some((h, _)) = host.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        return h;
     }
 
     match host.rsplit_once(':') {

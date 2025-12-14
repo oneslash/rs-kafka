@@ -83,7 +83,9 @@ pub enum Error {
 #[cfg(feature = "security")]
 #[derive(Debug, Error)]
 pub enum TlsError {
-    #[error("TLS configuration has no trusted root certificates; provide CA certificates or enable native roots")]
+    #[error(
+        "TLS configuration has no trusted root certificates; provide CA certificates or enable native roots"
+    )]
     NoRootCertificates,
 
     #[error("no certificates found in PEM input")]
@@ -92,7 +94,9 @@ pub enum TlsError {
     #[error("no private key found in PEM input")]
     NoPrivateKeyFound,
 
-    #[error("client authentication is incomplete; provide both a certificate chain and a private key")]
+    #[error(
+        "client authentication is incomplete; provide both a certificate chain and a private key"
+    )]
     IncompleteClientAuthConfig,
 
     #[error("invalid server name for TLS SNI/hostname verification")]

@@ -9,7 +9,7 @@
 //!
 //! # Example
 //! ```no_run
-//! use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+//! use kafkang::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 //!
 //! let mut consumer =
 //!    Consumer::from_hosts(vec!("localhost:9092".to_owned()))
@@ -72,9 +72,9 @@ use crate::protocol;
 // public re-exports
 pub use self::builder::Builder;
 use self::state::TopicPartition;
-pub use crate::client::fetch::Message;
 pub use crate::client::FetchOffset;
 pub use crate::client::GroupOffsetStorage;
+pub use crate::client::fetch::Message;
 
 mod assignment;
 mod builder;
@@ -186,9 +186,9 @@ impl Consumer {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{FetchOffset, GroupOffsetStorage, KafkaClient};
-    /// use kafka::consumer::Consumer;
-    /// use kafka::Result;
+    /// use kafkang::client::{FetchOffset, GroupOffsetStorage, KafkaClient};
+    /// use kafkang::consumer::Consumer;
+    /// use kafkang::Result;
     ///
     /// let mut consumer: Consumer = Consumer::from_hosts(vec!["localhost:9092".to_string()])
     ///     .with_topic("test-topic".to_string())

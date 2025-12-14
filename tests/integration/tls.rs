@@ -1,6 +1,6 @@
 use super::*;
 
-use kafka::client::{KafkaClient, SecurityConfig, TlsConnector};
+use kafkang::client::{KafkaClient, SecurityConfig, TlsConnector};
 
 #[test]
 fn test_tls_wrong_ca_fails() {
@@ -14,7 +14,7 @@ fn test_tls_wrong_ca_fails() {
     let mut client = KafkaClient::new_secure(hosts, SecurityConfig::new(connector));
     let err = client.load_metadata_all().unwrap_err();
     assert!(
-        matches!(err, kafka::Error::Tls(_)),
+        matches!(err, kafkang::Error::Tls(_)),
         "expected TLS error, got {err:?}"
     );
 }
@@ -35,7 +35,7 @@ fn test_tls_wrong_hostname_fails() {
     let mut client = KafkaClient::new_secure(hosts, SecurityConfig::new(connector));
     let err = client.load_metadata_all().unwrap_err();
     assert!(
-        matches!(err, kafka::Error::Tls(_)),
+        matches!(err, kafkang::Error::Tls(_)),
         "expected TLS error, got {err:?}"
     );
 }
@@ -76,7 +76,7 @@ fn test_mtls_missing_client_cert_fails() {
     let mut client = KafkaClient::new_secure(hosts, SecurityConfig::new(connector));
     let err = client.load_metadata_all().unwrap_err();
     assert!(
-        matches!(err, kafka::Error::Tls(_)),
+        matches!(err, kafkang::Error::Tls(_)),
         "expected TLS error, got {err:?}"
     );
 }

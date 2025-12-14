@@ -1,7 +1,7 @@
 use super::*;
 
-use kafka::error;
-use kafka::producer::Record;
+use kafkang::error;
+use kafkang::producer::Record;
 
 /// Tests that basic message sending results in a successful call.
 #[test]

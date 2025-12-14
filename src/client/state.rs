@@ -30,7 +30,7 @@ pub struct ClientState {
 
 // ~ note: this type is re-exported to the crate's public api through
 // client::metadata
-/// Describes a Kafka broker node `kafka-rust` is communicating with.
+/// Describes a Kafka broker node `kafkang` is communicating with.
 #[derive(Debug)]
 pub struct Broker {
     /// The identifier of this broker as understood in a Kafka
@@ -404,9 +404,7 @@ impl ClientState {
             });
         }
         if let Some(br) = self.group_coordinators.get_mut(group) {
-            if br.index != broker_ref.index {
-                br.index = broker_ref.index;
-            }
+            br.index = broker_ref.index;
         }
         self.group_coordinators.insert(group.to_owned(), broker_ref);
         &self.brokers[broker_ref.index()].host
