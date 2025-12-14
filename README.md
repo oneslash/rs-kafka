@@ -45,6 +45,21 @@ At a high level:
 - Construct a `TlsConnector` using `TlsConnector::default()` (native roots, with a bundled-root fallback), or use `TlsConnector::builder()` to append a custom CA bundle and/or configure client authentication (mTLS).
 - Migration guide for older OpenSSL-based code: `docs/migration-openssl-to-rustls.md`.
 
+## SASL authentication
+
+SASL authentication is configured per broker connection via `KafkaClient::set_sasl_config(..)`.
+
+```rust
+use kafkang::client::{KafkaClient, SaslConfig};
+
+let mut client = KafkaClient::new(vec!["localhost:9096".to_owned()]);
+client.set_sasl_config(Some(SaslConfig::plain("kafkang", "kafkang-secret")));
+client.load_metadata_all().unwrap();
+```
+
+Security note: SASL/PLAIN does not encrypt credentials; combine it with TLS (`KafkaClient::new_secure`)
+in production. See `docs/sasl.md`.
+
 ## Supported Kafka versions
 
 `kafkang` is tested in CI against the following Kafka versions:

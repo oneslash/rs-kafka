@@ -11,6 +11,7 @@ use std::io::{Cursor, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
+use super::sasl::SaslConfig;
 #[cfg(feature = "security")]
 use super::tls;
 #[cfg(feature = "security")]
@@ -19,8 +20,11 @@ use super::tls::SecurityConfig;
 use crate::error::TlsError;
 
 use crate::codecs::{FromByte, ToByte};
-use crate::error::Result;
-use crate::protocol::{ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions};
+use crate::error::{Error, KafkaCode, Result};
+use crate::protocol::{
+    ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions, SaslAuthenticateRequest,
+    SaslAuthenticateResponse, SaslHandshakeRequest, SaslHandshakeResponse,
+};
 
 // --------------------------------------------------------------------
 
@@ -53,6 +57,7 @@ pub struct Config {
     client_id: String,
     rw_timeout: Option<Duration>,
     idle_timeout: Duration,
+    sasl: Option<SaslConfig>,
     #[cfg(feature = "security")]
     security: Option<SecurityConfig>,
 }
@@ -62,6 +67,9 @@ impl Config {
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         let mut conn = KafkaConnection::new(id, host, self.rw_timeout)?;
         conn.negotiate_api_versions(id as i32, &self.client_id)?;
+        if let Some(sasl) = self.sasl.as_ref() {
+            conn.authenticate_sasl(id as i32, &self.client_id, sasl)?;
+        }
         debug!("Established: {:?}", conn);
         Ok(conn)
     }
@@ -70,6 +78,9 @@ impl Config {
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         let mut conn = KafkaConnection::new(id, host, self.rw_timeout, self.security.as_ref())?;
         conn.negotiate_api_versions(id as i32, &self.client_id)?;
+        if let Some(sasl) = self.sasl.as_ref() {
+            conn.authenticate_sasl(id as i32, &self.client_id, sasl)?;
+        }
         debug!("Established: {:?}", conn);
         Ok(conn)
     }
@@ -113,6 +124,7 @@ impl Connections {
                 client_id,
                 rw_timeout,
                 idle_timeout,
+                sasl: None,
             },
         }
     }
@@ -140,6 +152,7 @@ impl Connections {
                 client_id,
                 rw_timeout,
                 idle_timeout,
+                sasl: None,
                 security,
             },
         }
@@ -151,6 +164,14 @@ impl Connections {
 
     pub fn set_idle_timeout(&mut self, idle_timeout: Duration) {
         self.config.idle_timeout = idle_timeout;
+    }
+
+    pub fn set_sasl_config(&mut self, sasl: Option<SaslConfig>) {
+        for (_, conn) in &mut self.conns {
+            let _ = conn.item.shutdown();
+        }
+        self.conns.clear();
+        self.config.sasl = sasl;
     }
 
     pub fn idle_timeout(&self) -> Duration {
@@ -377,6 +398,56 @@ impl KafkaConnection {
         let _ = versions.select_highest_common_version(18, &[2])?; // ApiVersions v2
         self.broker_api_versions = Some(versions);
         Ok(())
+    }
+
+    fn authenticate_sasl(
+        &mut self,
+        correlation_seed: i32,
+        client_id: &str,
+        sasl: &SaslConfig,
+    ) -> Result<()> {
+        let versions = self
+            .broker_api_versions
+            .as_ref()
+            .ok_or(Error::UnsupportedProtocol)?;
+
+        let _ = versions.select_highest_common_version(17, &[0])?; // SaslHandshake v0
+        let _ = versions.select_highest_common_version(36, &[0])?; // SaslAuthenticate v0
+
+        match sasl {
+            SaslConfig::Plain(cfg) => {
+                let mechanism = "PLAIN";
+                let req = SaslHandshakeRequest::new(
+                    correlation_seed.wrapping_add(1),
+                    client_id,
+                    mechanism,
+                );
+                __send_request(self, req)?;
+
+                let resp = __get_response::<SaslHandshakeResponse>(self)?;
+                resp.check_error()?;
+                if !resp.enabled_mechanisms.iter().any(|m| m == mechanism) {
+                    return Err(Error::Kafka(KafkaCode::UnsupportedSaslMechanism));
+                }
+
+                let token = cfg.initial_response();
+                let req = SaslAuthenticateRequest::new(
+                    correlation_seed.wrapping_add(2),
+                    client_id,
+                    token.as_slice(),
+                );
+                __send_request(self, req)?;
+
+                let resp = __get_response::<SaslAuthenticateResponse>(self)?;
+                if let Err(err) = resp.check_error() {
+                    if !resp.error_message.is_empty() {
+                        warn!("SASL authentication failed: {}", resp.error_message);
+                    }
+                    return Err(err);
+                }
+                Ok(())
+            }
+        }
     }
 
     fn from_stream(

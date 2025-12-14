@@ -128,12 +128,16 @@ jobs:
         node.id=1
         controller.quorum.voters=1@127.0.0.1:9093
         controller.listener.names=CONTROLLER
-        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
-        listeners=PLAINTEXT://127.0.0.1:9092,SSL://127.0.0.1:9094,CONTROLLER://127.0.0.1:9093
-        advertised.listeners=PLAINTEXT://127.0.0.1:9092,SSL://localhost:9094
+        listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL,SASL:SASL_PLAINTEXT
+        listeners=PLAINTEXT://127.0.0.1:9092,SSL://127.0.0.1:9094,SASL://127.0.0.1:9096,CONTROLLER://127.0.0.1:9093
+        advertised.listeners=PLAINTEXT://127.0.0.1:9092,SSL://localhost:9094,SASL://localhost:9096
         inter.broker.listener.name=PLAINTEXT
 
         log.dirs=$LOG_DIR
+
+        sasl.enabled.mechanisms=PLAIN
+        listener.name.sasl.sasl.enabled.mechanisms=PLAIN
+        listener.name.sasl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required user_kafkang="kafkang-secret";
 
         ssl.keystore.location=$TLS_DIR/server.keystore.p12
         ssl.keystore.password=$TLS_PASS
@@ -182,6 +186,12 @@ jobs:
       env:
         KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
         KAFKA_CLIENT_SECURE: tls
+
+    - name: Run tests (SASL/PLAIN)
+      run: cargo test --all-features
+      env:
+        KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
+        KAFKA_CLIENT_SECURE: sasl_plaintext
 
     - name: Show Kafka logs (on failure)
       if: failure()
