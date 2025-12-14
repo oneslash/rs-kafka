@@ -411,7 +411,7 @@ impl KafkaConnection {
         sasl: &SaslConfig,
     ) -> Result<()> {
         if let Some(versions) = self.broker_api_versions.as_ref() {
-            let _ = versions.select_highest_common_version(17, &[0])?; // SaslHandshake v0
+            let _ = versions.select_highest_common_version(17, &[1])?; // SaslHandshake v1
             let _ = versions.select_highest_common_version(36, &[0])?; // SaslAuthenticate v0
         }
 

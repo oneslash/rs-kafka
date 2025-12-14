@@ -5,7 +5,8 @@ use crate::error::{Error, Result};
 
 use super::{API_KEY_SASL_HANDSHAKE, HeaderRequest, HeaderResponse};
 
-const SASL_HANDSHAKE_REQUEST_VERSION: i16 = 0;
+// v1 indicates that the SASL tokens will be wrapped in `SaslAuthenticate` requests (KIP-86).
+const SASL_HANDSHAKE_REQUEST_VERSION: i16 = 1;
 
 #[derive(Debug)]
 pub struct SaslHandshakeRequest<'a> {
@@ -75,7 +76,7 @@ mod tests {
     use super::{SaslHandshakeRequest, SaslHandshakeResponse};
 
     #[test]
-    fn test_sasl_handshake_request_v0_encoding() {
+    fn test_sasl_handshake_request_v1_encoding() {
         let correlation_id: i32 = 123;
         let client_id = "test-client";
         let mechanism = "PLAIN";
@@ -87,7 +88,7 @@ mod tests {
 
         let mut expected = Vec::new();
         (17i16).encode(&mut expected).unwrap(); // api_key
-        (0i16).encode(&mut expected).unwrap(); // api_version
+        (1i16).encode(&mut expected).unwrap(); // api_version
         correlation_id.encode(&mut expected).unwrap();
         client_id.encode(&mut expected).unwrap();
         mechanism.encode(&mut expected).unwrap();

@@ -36,16 +36,28 @@ jobs:
         include:
           - KAFKA_VER: 3.8.1
             COMPRESSION: NONE
+            SECURE: ""
           - KAFKA_VER: 3.9.1
             COMPRESSION: NONE
+            SECURE: ""
           - KAFKA_VER: 4.0.1
             COMPRESSION: NONE
+            SECURE: ""
           - KAFKA_VER: 4.1.0
             COMPRESSION: NONE
+            SECURE: ""
           - KAFKA_VER: 4.1.0
             COMPRESSION: GZIP
+            SECURE: ""
           - KAFKA_VER: 4.1.0
             COMPRESSION: SNAPPY
+            SECURE: ""
+          - KAFKA_VER: 4.1.0
+            COMPRESSION: NONE
+            SECURE: tls
+          - KAFKA_VER: 4.1.0
+            COMPRESSION: NONE
+            SECURE: sasl_plaintext
     steps:
     - uses: actions/checkout@v4
 
@@ -137,7 +149,8 @@ jobs:
 
         sasl.enabled.mechanisms=PLAIN
         listener.name.sasl.sasl.enabled.mechanisms=PLAIN
-        listener.name.sasl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="kafka" password="kafka-secret" user_kafkang="kafkang-secret";
+        listener.name.sasl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="kafkang" password="kafkang-secret" user_kafkang="kafkang-secret";
+        listener.name.sasl.plain.sasl.server.callback.handler.class=org.apache.kafka.common.security.plain.internals.PlainServerCallbackHandler
 
         ssl.keystore.location=$TLS_DIR/server.keystore.p12
         ssl.keystore.password=$TLS_PASS
@@ -180,18 +193,7 @@ jobs:
       run: cargo test --all-features
       env:
         KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
-
-    - name: Run tests (TLS)
-      run: cargo test --all-features
-      env:
-        KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
-        KAFKA_CLIENT_SECURE: tls
-
-    - name: Run tests (SASL/PLAIN)
-      run: cargo test --all-features
-      env:
-        KAFKA_CLIENT_COMPRESSION: ${{ matrix.COMPRESSION }}
-        KAFKA_CLIENT_SECURE: sasl_plaintext
+        KAFKA_CLIENT_SECURE: ${{ matrix.SECURE }}
 
     - name: Show Kafka logs (on failure)
       if: failure()
