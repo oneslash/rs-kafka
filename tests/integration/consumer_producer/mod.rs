@@ -3,13 +3,11 @@ pub use super::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use kafka;
 use kafka::client::{FetchOffset, PartitionOffset};
 use kafka::consumer::Consumer;
 use kafka::producer::Record;
 use kafka::producer::{Producer, RequiredAcks};
 
-use rand;
 use rand::RngCore;
 
 const RANDOM_MESSAGE_SIZE: usize = 32;
@@ -111,8 +109,8 @@ pub(crate) fn get_group_offsets(
         .unwrap()
         .iter()
         .map(|po| {
-            let offset = if default_offset.is_some() && po.offset == -1 {
-                default_offset.unwrap()
+            let offset = if po.offset == -1 {
+                default_offset.unwrap_or(po.offset)
             } else {
                 po.offset
             };

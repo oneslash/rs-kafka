@@ -114,7 +114,7 @@ pub struct SnappyReader<'a> {
     uncompressed_chunk: Vec<u8>,
 }
 
-impl<'a> SnappyReader<'a> {
+impl SnappyReader<'_> {
     pub fn new(mut stream: &[u8]) -> Result<SnappyReader<'_>> {
         stream = validate_stream(stream)?;
         Ok(SnappyReader {

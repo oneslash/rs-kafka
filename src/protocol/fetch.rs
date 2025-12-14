@@ -169,7 +169,7 @@ pub struct ResponseParser<'a, 'b, 'c> {
     pub requests: Option<&'c FetchRequest<'a, 'b>>,
 }
 
-impl<'a, 'b, 'c> super::ResponseParser for ResponseParser<'a, 'b, 'c> {
+impl super::ResponseParser for ResponseParser<'_, '_, '_> {
     type T = Response;
     fn parse(&self, response: Vec<u8>) -> Result<Self::T> {
         Response::from_vec(response, self.requests, self.validate_crc)
@@ -535,7 +535,7 @@ struct ProtocolMessage<'a> {
     value: &'a [u8],
 }
 
-impl<'a> ProtocolMessage<'a> {
+impl ProtocolMessage<'_> {
     /// Parses a raw message from the given byte slice.  Does _not_
     /// handle any compression.
     fn from_slice(raw_data: &[u8], validate_crc: bool) -> Result<ProtocolMessage<'_>> {

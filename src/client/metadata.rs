@@ -289,7 +289,7 @@ impl<'a> Iterator for PartitionIter<'a> {
 /// more directly through `partition.is_available()`.
 pub struct Partition<'a> {
     state: &'a ClientState,
-    topic_partition: &'a TopicPartition,
+    tp: &'a TopicPartition,
     id: i32,
 }
 
@@ -297,7 +297,7 @@ impl<'a> Partition<'a> {
     fn new(state: &'a ClientState, partition: &'a TopicPartition, id: i32) -> Partition<'a> {
         Self {
             state,
-            topic_partition: partition,
+            tp: partition,
             id,
         }
     }
@@ -314,7 +314,7 @@ impl<'a> Partition<'a> {
     #[inline]
     #[must_use]
     pub fn leader(&self) -> Option<&'a Broker> {
-        self.topic_partition.broker(self.state)
+        self.tp.broker(self.state)
     }
 
     /// Determines whether this partition is currently "available".

@@ -10,7 +10,6 @@ extern crate lazy_static;
 
 #[cfg(feature = "integration_tests")]
 mod integration {
-    use std;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

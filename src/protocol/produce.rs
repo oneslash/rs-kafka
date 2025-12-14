@@ -186,7 +186,7 @@ impl ToByte for TopicPartitionProduceRequest<'_> {
     }
 }
 
-impl<'a> PartitionProduceRequest<'a> {
+impl PartitionProduceRequest<'_> {
     // render: Partition MessageSetSize MessageSet
     //
     // MessetSet => [Offset MessageSize Message]
@@ -213,7 +213,7 @@ impl<'a> PartitionProduceRequest<'a> {
     }
 }
 
-impl<'a> MessageProduceRequest<'a> {
+impl MessageProduceRequest<'_> {
     fn new<'b>(key: Option<&'b [u8]>, value: Option<&'b [u8]>) -> MessageProduceRequest<'b> {
         MessageProduceRequest { key, value }
     }
