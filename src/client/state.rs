@@ -422,8 +422,10 @@ mod tests {
             error: 0,
             id,
             leader,
+            leader_epoch: 0,
             replicas: vec![],
             isr: vec![],
+            offline_replicas: vec![],
         }
     }
 
@@ -437,27 +439,34 @@ mod tests {
     fn metadata_response_initial() -> protocol::MetadataResponse {
         protocol::MetadataResponse {
             header: protocol::HeaderResponse { correlation: 1 },
+            throttle_time_ms: 0,
             brokers: vec![
                 md::BrokerMetadata {
                     node_id: 10,
                     host: "gin1.dev".to_owned(),
                     port: 1234,
+                    rack: String::new(),
                 },
                 md::BrokerMetadata {
                     node_id: 50,
                     host: "gin2.dev".to_owned(),
                     port: 9876,
+                    rack: String::new(),
                 },
                 md::BrokerMetadata {
                     node_id: 30,
                     host: "gin3.dev".to_owned(),
                     port: 9092,
+                    rack: String::new(),
                 },
             ],
+            cluster_id: String::new(),
+            controller_id: -1,
             topics: vec![
                 md::TopicMetadata {
                     error: 0,
                     topic: "tee-one".to_owned(),
+                    is_internal: 0,
                     partitions: vec![
                         new_partition(0, 50),
                         new_partition(1, 10),
@@ -465,23 +474,29 @@ mod tests {
                         new_partition(3, -1),
                         new_partition(4, 50),
                     ],
+                    topic_authorized_operations: 0,
                 },
                 md::TopicMetadata {
                     error: 0,
                     topic: "tee-two".to_owned(),
+                    is_internal: 0,
                     partitions: vec![
                         new_partition(0, 30),
                         new_partition(1, -1),
                         new_partition(2, -1),
                         new_partition(3, 10),
                     ],
+                    topic_authorized_operations: 0,
                 },
                 md::TopicMetadata {
                     error: 0,
                     topic: "tee-three".to_owned(),
+                    is_internal: 0,
                     partitions: vec![],
+                    topic_authorized_operations: 0,
                 },
             ],
+            cluster_authorized_operations: 0,
         }
     }
 
@@ -553,11 +568,13 @@ mod tests {
     fn metadata_response_update() -> protocol::MetadataResponse {
         protocol::MetadataResponse {
             header: protocol::HeaderResponse { correlation: 2 },
+            throttle_time_ms: 0,
             brokers: vec![
                 md::BrokerMetadata {
                     node_id: 10,
                     host: "gin1.dev".to_owned(),
                     port: 1234,
+                    rack: String::new(),
                 },
                 // note: compared to the initial metadata
                 // response this broker moved to a different
@@ -566,17 +583,22 @@ mod tests {
                     node_id: 50,
                     host: "aladin1.dev".to_owned(),
                     port: 9091,
+                    rack: String::new(),
                 },
                 md::BrokerMetadata {
                     node_id: 30,
                     host: "gin3.dev".to_owned(),
                     port: 9092,
+                    rack: String::new(),
                 },
             ],
+            cluster_id: String::new(),
+            controller_id: -1,
             // metadata for topic "tee-two" only
             topics: vec![md::TopicMetadata {
                 error: 0,
                 topic: "tee-two".to_owned(),
+                is_internal: 0,
                 partitions: vec![
                     new_partition(0, 10),
                     new_partition(1, 10),
@@ -584,7 +606,9 @@ mod tests {
                     new_partition(3, -1),
                     new_partition(4, 30),
                 ],
+                topic_authorized_operations: 0,
             }],
+            cluster_authorized_operations: 0,
         }
     }
 

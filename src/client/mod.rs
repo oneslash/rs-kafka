@@ -184,13 +184,13 @@ impl GroupOffsetStorage {
     fn offset_fetch_version(self) -> protocol::OffsetFetchVersion {
         match self {
             GroupOffsetStorage::Zookeeper => protocol::OffsetFetchVersion::V0,
-            GroupOffsetStorage::Kafka => protocol::OffsetFetchVersion::V1,
+            GroupOffsetStorage::Kafka => protocol::OffsetFetchVersion::V5,
         }
     }
     fn offset_commit_version(self) -> protocol::OffsetCommitVersion {
         match self {
             GroupOffsetStorage::Zookeeper => protocol::OffsetCommitVersion::V0,
-            GroupOffsetStorage::Kafka => protocol::OffsetCommitVersion::V2,
+            GroupOffsetStorage::Kafka => protocol::OffsetCommitVersion::V7,
         }
     }
 }
@@ -948,7 +948,7 @@ impl KafkaClient {
         topics: &[T],
         offset: FetchOffset,
     ) -> Result<HashMap<String, Vec<TimestampedPartitionOffset>>> {
-        let api_ver = ListOffsetVersion::V1;
+        let api_ver = ListOffsetVersion::V5;
         let time = offset.to_kafka_value();
         let n_topics = topics.len();
 
@@ -1150,12 +1150,13 @@ impl KafkaClient {
             if let Some(broker) = state.find_broker(inp.topic, inp.partition) {
                 reqs.entry(broker)
                     .or_insert_with(|| {
-                        protocol::FetchRequest::new_v4(
+                        protocol::FetchRequest::new_v11(
                             correlation,
                             &config.client_id,
                             config.fetch_max_wait_time,
                             config.fetch_min_bytes,
                             i32::MAX,
+                            "",
                         )
                     })
                     .add(
@@ -1591,6 +1592,10 @@ fn __fetch_group_offsets(
         };
 
         debug!("fetch_group_offsets: received response: {:#?}", r);
+
+        if let Some(e) = r.group_error() {
+            return Err(e);
+        }
 
         let mut retry_code = None;
         let mut topic_map = HashMap::with_capacity(r.topic_partitions.len());

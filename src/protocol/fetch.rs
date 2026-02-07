@@ -26,6 +26,7 @@ use super::zreader::ZReader;
 use super::{API_KEY_FETCH, API_VERSION, HeaderRequest};
 
 pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
+const FETCH_API_VERSION: i16 = 11;
 
 #[derive(Debug)]
 pub struct FetchRequest<'a, 'b> {
@@ -35,6 +36,9 @@ pub struct FetchRequest<'a, 'b> {
     pub min_bytes: i32,
     pub max_bytes: i32,
     pub isolation_level: i8,
+    pub session_id: i32,
+    pub session_epoch: i32,
+    pub rack_id: &'a str,
     // topic -> partitions
     pub topic_partitions: HashMap<&'b str, TopicPartitionFetchRequest>,
 }
@@ -47,7 +51,9 @@ pub struct TopicPartitionFetchRequest {
 
 #[derive(Debug)]
 pub struct PartitionFetchRequest {
+    pub current_leader_epoch: i32,
     pub offset: i64,
+    pub log_start_offset: i64,
     pub max_bytes: i32,
 }
 
@@ -66,10 +72,14 @@ impl<'a, 'b> FetchRequest<'a, 'b> {
             min_bytes,
             max_bytes: i32::MAX,
             isolation_level: 0,
+            session_id: 0,
+            session_epoch: -1,
+            rack_id: "",
             topic_partitions: HashMap::new(),
         }
     }
 
+    #[allow(dead_code)]
     pub fn new_v4(
         correlation_id: i32,
         client_id: &'a str,
@@ -84,6 +94,31 @@ impl<'a, 'b> FetchRequest<'a, 'b> {
             min_bytes,
             max_bytes,
             isolation_level: 0,
+            session_id: 0,
+            session_epoch: -1,
+            rack_id: "",
+            topic_partitions: HashMap::new(),
+        }
+    }
+
+    pub fn new_v11(
+        correlation_id: i32,
+        client_id: &'a str,
+        max_wait_time: i32,
+        min_bytes: i32,
+        max_bytes: i32,
+        rack_id: &'a str,
+    ) -> FetchRequest<'a, 'b> {
+        FetchRequest {
+            header: HeaderRequest::new(API_KEY_FETCH, FETCH_API_VERSION, correlation_id, client_id),
+            replica: -1,
+            max_wait_time,
+            min_bytes,
+            max_bytes,
+            isolation_level: 0,
+            session_id: 0,
+            session_epoch: -1,
+            rack_id,
             topic_partitions: HashMap::new(),
         }
     }
@@ -119,7 +154,12 @@ impl TopicPartitionFetchRequest {
 
 impl PartitionFetchRequest {
     pub fn new(offset: i64, max_bytes: i32) -> PartitionFetchRequest {
-        PartitionFetchRequest { offset, max_bytes }
+        PartitionFetchRequest {
+            current_leader_epoch: -1,
+            offset,
+            log_start_offset: -1,
+            max_bytes,
+        }
     }
 }
 
@@ -133,32 +173,53 @@ impl ToByte for FetchRequest<'_, '_> {
             self.max_bytes.encode(buffer)?;
             self.isolation_level.encode(buffer)?;
         }
+        if self.header.api_version >= 7 {
+            self.session_id.encode(buffer)?;
+            self.session_epoch.encode(buffer)?;
+        }
         // encode the hashmap as a vector
         (self.topic_partitions.len() as i32).encode(buffer)?;
         for (name, tp) in &self.topic_partitions {
-            tp.encode(name, buffer)?;
+            tp.encode(name, self.header.api_version, buffer)?;
+        }
+        if self.header.api_version >= 7 {
+            // forgotten_topics_data
+            (0i32).encode(buffer)?;
+        }
+        if self.header.api_version >= 11 {
+            self.rack_id.encode(buffer)?;
         }
         Ok(())
     }
 }
 
 impl TopicPartitionFetchRequest {
-    fn encode<W: Write>(&self, topic: &str, buffer: &mut W) -> Result<()> {
+    fn encode<W: Write>(&self, topic: &str, api_version: i16, buffer: &mut W) -> Result<()> {
         topic.encode(buffer)?;
         // encode the hashmap as a vector
         (self.partitions.len() as i32).encode(buffer)?;
         for (&pid, p) in &self.partitions {
-            p.encode(pid, buffer)?;
+            p.encode(pid, api_version, buffer)?;
         }
         Ok(())
     }
 }
 
 impl PartitionFetchRequest {
-    fn encode<T: Write>(&self, partition: i32, buffer: &mut T) -> Result<()> {
+    fn encode<T: Write>(&self, partition: i32, api_version: i16, buffer: &mut T) -> Result<()> {
         try_multi!(
             partition.encode(buffer),
+            if api_version >= 9 {
+                self.current_leader_epoch.encode(buffer)
+            } else {
+                Ok(())
+            },
             self.offset.encode(buffer),
+            if api_version >= 5 {
+                self.log_start_offset.encode(buffer)
+            } else {
+                Ok(())
+            },
             self.max_bytes.encode(buffer)
         )
     }
@@ -224,6 +285,11 @@ impl Response {
         let api_version = reqs.map_or(0, |req| req.header.api_version);
         if api_version >= 4 {
             // throttle_time_ms
+            let _ = r.read_i32()?;
+        }
+        if api_version >= 7 {
+            // error_code, session_id
+            let _ = r.read_i16()?;
             let _ = r.read_i32()?;
         }
         let topics = array_of!(r, Topic::read(&mut r, reqs, validate_crc, api_version));
@@ -328,12 +394,20 @@ impl<'a> Partition<'a> {
         let msgset = if api_version >= 4 {
             // last_stable_offset
             let _ = r.read_i64()?;
+            if api_version >= 5 {
+                // log_start_offset
+                let _ = r.read_i64()?;
+            }
             // aborted_transactions
             let aborted_len = r.read_array_len()?;
             for _ in 0..aborted_len {
                 // producer_id, first_offset
                 let _ = r.read_i64()?;
                 let _ = r.read_i64()?;
+            }
+            if api_version >= 11 {
+                // preferred_read_replica
+                let _ = r.read_i32()?;
             }
             let record_set = r.read_bytes()?;
             MessageSet::from_record_set_slice(record_set, proffs, validate_crc)?
@@ -570,6 +644,7 @@ mod tests {
     use std::str;
 
     use super::{FetchRequest, Message, Response};
+    use crate::codecs::ToByte;
     use crate::error::{Error, KafkaCode};
 
     static FETCH1_TXT: &str = include_str!("../../test-data/fetch1.txt");
@@ -792,6 +867,30 @@ mod tests {
             Err(Error::Kafka(KafkaCode::CorruptMessage)) => {}
             Err(e) => panic!("Expected KafkaCode::CorruptMessage error, but got: {e:?}"),
         }
+    }
+
+    #[test]
+    fn test_fetch_request_v11_header_encoding() {
+        let req = FetchRequest::new_v11(1, "client-a", 100, 1, 1024 * 1024, "");
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+        // api_key=1, api_version=11
+        assert_eq!(&buf[0..4], &[0, 1, 0, 11]);
+    }
+
+    #[test]
+    fn test_parse_fetch_response_v11_with_empty_topics() {
+        let req = FetchRequest::new_v11(1, "client-a", 100, 1, 1024 * 1024, "");
+        let mut response = Vec::new();
+        (1i32).encode(&mut response).unwrap(); // correlation_id
+        (0i32).encode(&mut response).unwrap(); // throttle_time_ms
+        (0i16).encode(&mut response).unwrap(); // error_code
+        (0i32).encode(&mut response).unwrap(); // session_id
+        (0i32).encode(&mut response).unwrap(); // responses len
+
+        let parsed = Response::from_vec(response, Some(&req), true).unwrap();
+        assert_eq!(parsed.correlation_id(), 1);
+        assert!(parsed.topics().is_empty());
     }
 
     #[cfg(all(feature = "nightly", kafka_rust_nightly))]
