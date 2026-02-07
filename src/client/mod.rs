@@ -1593,14 +1593,33 @@ fn __fetch_group_offsets(
 
         debug!("fetch_group_offsets: received response: {:#?}", r);
 
-        if let Some(e) = r.group_error() {
-            return Err(e);
+        let mut retry_code = None;
+        if let Some(group_error) = r.group_error() {
+            match group_error {
+                Error::Kafka(e @ KafkaCode::GroupLoadInProgress) => {
+                    retry_code = Some(e);
+                }
+                Error::Kafka(e @ KafkaCode::NotCoordinatorForGroup) => {
+                    debug!(
+                        "fetch_group_offsets: resetting group coordinator for '{}'",
+                        req.group
+                    );
+                    state.remove_group_coordinator(req.group);
+                    retry_code = Some(e);
+                }
+                e => {
+                    return Err(e);
+                }
+            }
         }
 
-        let mut retry_code = None;
         let mut topic_map = HashMap::with_capacity(r.topic_partitions.len());
 
         'rproc: for tp in r.topic_partitions {
+            if retry_code.is_some() {
+                break;
+            }
+
             let mut partition_offsets = Vec::with_capacity(tp.partitions.len());
 
             for p in tp.partitions {

@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 
 use crate::codecs::{self, FromByte, ToByte};
 use crate::error::{self, Error, KafkaCode, Result};
@@ -241,11 +241,100 @@ impl FromByte for OffsetFetchResponse {
     type R = OffsetFetchResponse;
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
+        self.header.decode(buffer)?;
+
+        let mut rest = Vec::new();
+        buffer.read_to_end(&mut rest)?;
+
+        // Prefer the modern (v5+) shape first, then fall back to the v0 shape.
+        let mut modern = Cursor::new(rest.as_slice());
+        let mut throttle_time_ms = 0i32;
+        let mut topic_partitions = Vec::<TopicPartitionOffsetFetchResponse>::new();
+        let mut error_code = 0i16;
+        if throttle_time_ms.decode(&mut modern).is_ok()
+            && topic_partitions.decode(&mut modern).is_ok()
+            && error_code.decode(&mut modern).is_ok()
+            && modern.position() as usize == rest.len()
+        {
+            self.throttle_time_ms = throttle_time_ms;
+            self.topic_partitions = topic_partitions;
+            self.error_code = error_code;
+            return Ok(());
+        }
+
+        let mut legacy = Cursor::new(rest.as_slice());
+        let mut legacy_topic_partitions = Vec::<TopicPartitionOffsetFetchResponseV0>::new();
+        legacy_topic_partitions.decode(&mut legacy)?;
+        if legacy.position() as usize != rest.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+
+        self.throttle_time_ms = 0;
+        self.error_code = 0;
+        self.topic_partitions = legacy_topic_partitions
+            .into_iter()
+            .map(TopicPartitionOffsetFetchResponseV0::into_current)
+            .collect();
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+struct TopicPartitionOffsetFetchResponseV0 {
+    topic: String,
+    partitions: Vec<PartitionOffsetFetchResponseV0>,
+}
+
+impl TopicPartitionOffsetFetchResponseV0 {
+    fn into_current(self) -> TopicPartitionOffsetFetchResponse {
+        TopicPartitionOffsetFetchResponse {
+            topic: self.topic,
+            partitions: self
+                .partitions
+                .into_iter()
+                .map(PartitionOffsetFetchResponseV0::into_current)
+                .collect(),
+        }
+    }
+}
+
+impl FromByte for TopicPartitionOffsetFetchResponseV0 {
+    type R = TopicPartitionOffsetFetchResponseV0;
+
+    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
+        try_multi!(self.topic.decode(buffer), self.partitions.decode(buffer))
+    }
+}
+
+#[derive(Default, Debug)]
+struct PartitionOffsetFetchResponseV0 {
+    partition: i32,
+    offset: i64,
+    metadata: String,
+    error: i16,
+}
+
+impl PartitionOffsetFetchResponseV0 {
+    fn into_current(self) -> PartitionOffsetFetchResponse {
+        PartitionOffsetFetchResponse {
+            partition: self.partition,
+            offset: self.offset,
+            committed_leader_epoch: -1,
+            metadata: self.metadata,
+            error: self.error,
+        }
+    }
+}
+
+impl FromByte for PartitionOffsetFetchResponseV0 {
+    type R = PartitionOffsetFetchResponseV0;
+
+    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         try_multi!(
-            self.header.decode(buffer),
-            self.throttle_time_ms.decode(buffer),
-            self.topic_partitions.decode(buffer),
-            self.error_code.decode(buffer)
+            self.partition.decode(buffer),
+            self.offset.decode(buffer),
+            self.metadata.decode(buffer),
+            self.error.decode(buffer)
         )
     }
 }
@@ -461,11 +550,31 @@ impl FromByte for OffsetCommitResponse {
     type R = OffsetCommitResponse;
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
-        try_multi!(
-            self.header.decode(buffer),
-            self.throttle_time_ms.decode(buffer),
-            self.topic_partitions.decode(buffer)
-        )
+        self.header.decode(buffer)?;
+
+        let mut rest = Vec::new();
+        buffer.read_to_end(&mut rest)?;
+
+        // Prefer the modern (v3+) shape first, then fall back to v0-v2.
+        let mut modern = Cursor::new(rest.as_slice());
+        let mut throttle_time_ms = 0i32;
+        let mut topic_partitions = Vec::<TopicPartitionOffsetCommitResponse>::new();
+        if throttle_time_ms.decode(&mut modern).is_ok()
+            && topic_partitions.decode(&mut modern).is_ok()
+            && modern.position() as usize == rest.len()
+        {
+            self.throttle_time_ms = throttle_time_ms;
+            self.topic_partitions = topic_partitions;
+            return Ok(());
+        }
+
+        let mut legacy = Cursor::new(rest.as_slice());
+        self.topic_partitions.decode(&mut legacy)?;
+        if legacy.position() as usize != rest.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+        self.throttle_time_ms = 0;
+        Ok(())
     }
 }
 
@@ -510,7 +619,8 @@ mod tests {
     use crate::codecs::{FromByte, ToByte};
 
     use super::{
-        GroupCoordinatorRequest, OffsetCommitRequest, OffsetCommitVersion, OffsetFetchResponse,
+        GroupCoordinatorRequest, OffsetCommitRequest, OffsetCommitResponse, OffsetCommitVersion,
+        OffsetFetchResponse,
     };
 
     #[test]
@@ -560,5 +670,44 @@ mod tests {
         assert_eq!(p.partition, 1);
         assert_eq!(p.offset, 100);
         assert_eq!(p.committed_leader_epoch, 3);
+    }
+
+    #[test]
+    fn test_offset_fetch_response_v0_decoding_compatibility() {
+        let mut buf = Vec::new();
+        (42i32).encode(&mut buf).unwrap(); // correlation
+        (1i32).encode(&mut buf).unwrap(); // topics len
+        "topic-a".encode(&mut buf).unwrap();
+        (1i32).encode(&mut buf).unwrap(); // partitions len
+        (1i32).encode(&mut buf).unwrap(); // partition
+        (100i64).encode(&mut buf).unwrap(); // committed_offset
+        "meta".encode(&mut buf).unwrap();
+        (0i16).encode(&mut buf).unwrap(); // partition error
+
+        let resp = OffsetFetchResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 42);
+        assert_eq!(resp.throttle_time_ms, 0);
+        assert!(resp.group_error().is_none());
+        let p = &resp.topic_partitions[0].partitions[0];
+        assert_eq!(p.partition, 1);
+        assert_eq!(p.offset, 100);
+        assert_eq!(p.committed_leader_epoch, -1);
+    }
+
+    #[test]
+    fn test_offset_commit_response_v0_decoding_compatibility() {
+        let mut buf = Vec::new();
+        (77i32).encode(&mut buf).unwrap(); // correlation
+        (1i32).encode(&mut buf).unwrap(); // topics len
+        "topic-a".encode(&mut buf).unwrap();
+        (1i32).encode(&mut buf).unwrap(); // partitions len
+        (2i32).encode(&mut buf).unwrap(); // partition
+        (0i16).encode(&mut buf).unwrap(); // error
+
+        let resp = OffsetCommitResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 77);
+        assert_eq!(resp.throttle_time_ms, 0);
+        assert_eq!(resp.topic_partitions.len(), 1);
+        assert_eq!(resp.topic_partitions[0].partitions[0].partition, 2);
     }
 }
