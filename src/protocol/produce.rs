@@ -10,7 +10,7 @@ use super::records::encode_record_batch;
 use super::{HeaderRequest, HeaderResponse};
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
-const PRODUCE_API_VERSION: i16 = 4;
+const PRODUCE_API_VERSION: i16 = 8;
 
 impl ToByte for Option<&str> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
@@ -254,6 +254,15 @@ pub struct PartitionProduceResponse {
     pub error: i16,
     pub offset: i64,
     pub log_append_time: i64,
+    pub log_start_offset: i64,
+    pub record_errors: Vec<RecordError>,
+    pub error_message: String,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct RecordError {
+    pub batch_index: i32,
+    pub batch_index_error_message: String,
 }
 
 impl ProduceResponse {
@@ -323,7 +332,87 @@ impl FromByte for PartitionProduceResponse {
             self.partition.decode(buffer),
             self.error.decode(buffer),
             self.offset.decode(buffer),
-            self.log_append_time.decode(buffer)
+            self.log_append_time.decode(buffer),
+            self.log_start_offset.decode(buffer),
+            self.record_errors.decode(buffer),
+            self.error_message.decode(buffer)
         )
+    }
+}
+
+impl FromByte for RecordError {
+    type R = RecordError;
+
+    #[allow(unused_must_use)]
+    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
+        try_multi!(
+            self.batch_index.decode(buffer),
+            self.batch_index_error_message.decode(buffer)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::codecs::{FromByte, ToByte};
+    use crate::compression::Compression;
+
+    use super::{ProduceRequest, ProduceResponse};
+
+    #[test]
+    fn test_produce_request_uses_v8_header() {
+        let mut req = ProduceRequest::new(
+            1,
+            1_000,
+            123,
+            "client-a",
+            Compression::NONE,
+            #[cfg(feature = "producer_timestamp")]
+            None,
+        );
+        req.add("topic-a", 0, None, Some(b"v"));
+
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+
+        // api_key=0, api_version=8
+        assert_eq!(&buf[0..4], &[0, 0, 0, 8]);
+    }
+
+    #[test]
+    fn test_decode_v8_produce_response_partition_fields() {
+        let mut buf = Vec::new();
+
+        // response header
+        (7i32).encode(&mut buf).unwrap();
+        // topics
+        (1i32).encode(&mut buf).unwrap();
+        "topic-a".encode(&mut buf).unwrap();
+        // partitions
+        (1i32).encode(&mut buf).unwrap();
+        (0i32).encode(&mut buf).unwrap(); // partition
+        (0i16).encode(&mut buf).unwrap(); // error_code
+        (42i64).encode(&mut buf).unwrap(); // base_offset
+        (-1i64).encode(&mut buf).unwrap(); // log_append_time_ms
+        (7i64).encode(&mut buf).unwrap(); // log_start_offset
+        (1i32).encode(&mut buf).unwrap(); // record_errors len
+        (3i32).encode(&mut buf).unwrap(); // batch_index
+        "bad record".encode(&mut buf).unwrap(); // batch_index_error_message
+        "global error".encode(&mut buf).unwrap(); // error_message
+        (0i32).encode(&mut buf).unwrap(); // throttle_time_ms
+
+        let resp = ProduceResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 7);
+        assert_eq!(resp.topic_partitions.len(), 1);
+        let p = &resp.topic_partitions[0].partitions[0];
+        assert_eq!(p.partition, 0);
+        assert_eq!(p.offset, 42);
+        assert_eq!(p.log_start_offset, 7);
+        assert_eq!(p.record_errors.len(), 1);
+        assert_eq!(p.record_errors[0].batch_index, 3);
+        assert_eq!(p.record_errors[0].batch_index_error_message, "bad record");
+        assert_eq!(p.error_message, "global error");
     }
 }

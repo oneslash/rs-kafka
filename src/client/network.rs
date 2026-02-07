@@ -397,8 +397,13 @@ impl KafkaConnection {
         __send_request(self, req)?;
         let resp = __get_response::<ApiVersionsResponse>(self)?;
         let versions = resp.into_broker_api_versions()?;
-        let _ = versions.select_highest_common_version(0, &[4])?; // Produce v4
-        let _ = versions.select_highest_common_version(1, &[4])?; // Fetch v4
+        let _ = versions.select_highest_common_version(0, &[8])?; // Produce v8
+        let _ = versions.select_highest_common_version(1, &[11])?; // Fetch v11
+        let _ = versions.select_highest_common_version(2, &[5])?; // ListOffsets v5
+        let _ = versions.select_highest_common_version(3, &[8])?; // Metadata v8
+        let _ = versions.select_highest_common_version(8, &[7])?; // OffsetCommit v7
+        let _ = versions.select_highest_common_version(9, &[5])?; // OffsetFetch v5
+        let _ = versions.select_highest_common_version(10, &[2])?; // FindCoordinator v2
         let _ = versions.select_highest_common_version(18, &[2])?; // ApiVersions v2
         self.broker_api_versions = Some(versions);
         Ok(())
@@ -412,7 +417,7 @@ impl KafkaConnection {
     ) -> Result<()> {
         if let Some(versions) = self.broker_api_versions.as_ref() {
             let _ = versions.select_highest_common_version(17, &[1])?; // SaslHandshake v1
-            let _ = versions.select_highest_common_version(36, &[0])?; // SaslAuthenticate v0
+            let _ = versions.select_highest_common_version(36, &[1])?; // SaslAuthenticate v1
         }
 
         match sasl {

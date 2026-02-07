@@ -1,18 +1,21 @@
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 
 use crate::codecs::{self, FromByte, ToByte};
 use crate::error::{self, Error, KafkaCode, Result};
 use crate::utils::PartitionOffset;
 
-use super::{API_KEY_GROUP_COORDINATOR, API_KEY_OFFSET_COMMIT, API_KEY_OFFSET_FETCH, API_VERSION};
+use super::{API_KEY_GROUP_COORDINATOR, API_KEY_OFFSET_COMMIT, API_KEY_OFFSET_FETCH};
 use super::{HeaderRequest, HeaderResponse};
+
+const FIND_COORDINATOR_REQUEST_VERSION: i16 = 2;
 
 // --------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct GroupCoordinatorRequest<'a, 'b> {
     pub header: HeaderRequest<'a>,
-    pub group: &'b str,
+    pub key: &'b str,
+    pub key_type: i8,
 }
 
 impl<'a, 'b> GroupCoordinatorRequest<'a, 'b> {
@@ -24,25 +27,32 @@ impl<'a, 'b> GroupCoordinatorRequest<'a, 'b> {
         GroupCoordinatorRequest {
             header: HeaderRequest::new(
                 API_KEY_GROUP_COORDINATOR,
-                API_VERSION,
+                FIND_COORDINATOR_REQUEST_VERSION,
                 correlation_id,
                 client_id,
             ),
-            group,
+            key: group,
+            key_type: 0,
         }
     }
 }
 
 impl ToByte for GroupCoordinatorRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
-        try_multi!(self.header.encode(buffer), self.group.encode(buffer))
+        try_multi!(
+            self.header.encode(buffer),
+            self.key.encode(buffer),
+            self.key_type.encode(buffer)
+        )
     }
 }
 
 #[derive(Debug, Default)]
 pub struct GroupCoordinatorResponse {
     pub header: HeaderResponse,
+    pub throttle_time_ms: i32,
     pub error: i16,
+    pub error_message: String,
     pub broker_id: i32,
     pub port: i32,
     pub host: String,
@@ -63,7 +73,9 @@ impl FromByte for GroupCoordinatorResponse {
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         try_multi!(
             self.header.decode(buffer),
+            self.throttle_time_ms.decode(buffer),
             self.error.decode(buffer),
+            self.error_message.decode(buffer),
             self.broker_id.decode(buffer),
             self.host.decode(buffer),
             self.port.decode(buffer)
@@ -77,9 +89,8 @@ impl FromByte for GroupCoordinatorResponse {
 pub enum OffsetFetchVersion {
     /// causes the retrieval of the offsets from zookeeper
     V0 = 0,
-    /// supported as of kafka 0.8.2, causes the retrieval of the
-    /// offsets from kafka itself
-    V1 = 1,
+    /// supported on modern Kafka brokers.
+    V5 = 5,
 }
 
 #[derive(Debug)]
@@ -179,7 +190,15 @@ impl ToByte for PartitionOffsetFetchRequest {
 #[derive(Default, Debug)]
 pub struct OffsetFetchResponse {
     pub header: HeaderResponse,
+    pub throttle_time_ms: i32,
     pub topic_partitions: Vec<TopicPartitionOffsetFetchResponse>,
+    pub error_code: i16,
+}
+
+impl OffsetFetchResponse {
+    pub fn group_error(&self) -> Option<Error> {
+        Error::from_protocol(self.error_code)
+    }
 }
 
 #[derive(Default, Debug)]
@@ -192,6 +211,7 @@ pub struct TopicPartitionOffsetFetchResponse {
 pub struct PartitionOffsetFetchResponse {
     pub partition: i32,
     pub offset: i64,
+    pub committed_leader_epoch: i32,
     pub metadata: String,
     pub error: i16,
 }
@@ -221,9 +241,100 @@ impl FromByte for OffsetFetchResponse {
     type R = OffsetFetchResponse;
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
+        self.header.decode(buffer)?;
+
+        let mut rest = Vec::new();
+        buffer.read_to_end(&mut rest)?;
+
+        // Prefer the modern (v5+) shape first, then fall back to the v0 shape.
+        let mut modern = Cursor::new(rest.as_slice());
+        let mut throttle_time_ms = 0i32;
+        let mut topic_partitions = Vec::<TopicPartitionOffsetFetchResponse>::new();
+        let mut error_code = 0i16;
+        if throttle_time_ms.decode(&mut modern).is_ok()
+            && topic_partitions.decode(&mut modern).is_ok()
+            && error_code.decode(&mut modern).is_ok()
+            && modern.position() as usize == rest.len()
+        {
+            self.throttle_time_ms = throttle_time_ms;
+            self.topic_partitions = topic_partitions;
+            self.error_code = error_code;
+            return Ok(());
+        }
+
+        let mut legacy = Cursor::new(rest.as_slice());
+        let mut legacy_topic_partitions = Vec::<TopicPartitionOffsetFetchResponseV0>::new();
+        legacy_topic_partitions.decode(&mut legacy)?;
+        if legacy.position() as usize != rest.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+
+        self.throttle_time_ms = 0;
+        self.error_code = 0;
+        self.topic_partitions = legacy_topic_partitions
+            .into_iter()
+            .map(TopicPartitionOffsetFetchResponseV0::into_current)
+            .collect();
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+struct TopicPartitionOffsetFetchResponseV0 {
+    topic: String,
+    partitions: Vec<PartitionOffsetFetchResponseV0>,
+}
+
+impl TopicPartitionOffsetFetchResponseV0 {
+    fn into_current(self) -> TopicPartitionOffsetFetchResponse {
+        TopicPartitionOffsetFetchResponse {
+            topic: self.topic,
+            partitions: self
+                .partitions
+                .into_iter()
+                .map(PartitionOffsetFetchResponseV0::into_current)
+                .collect(),
+        }
+    }
+}
+
+impl FromByte for TopicPartitionOffsetFetchResponseV0 {
+    type R = TopicPartitionOffsetFetchResponseV0;
+
+    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
+        try_multi!(self.topic.decode(buffer), self.partitions.decode(buffer))
+    }
+}
+
+#[derive(Default, Debug)]
+struct PartitionOffsetFetchResponseV0 {
+    partition: i32,
+    offset: i64,
+    metadata: String,
+    error: i16,
+}
+
+impl PartitionOffsetFetchResponseV0 {
+    fn into_current(self) -> PartitionOffsetFetchResponse {
+        PartitionOffsetFetchResponse {
+            partition: self.partition,
+            offset: self.offset,
+            committed_leader_epoch: -1,
+            metadata: self.metadata,
+            error: self.error,
+        }
+    }
+}
+
+impl FromByte for PartitionOffsetFetchResponseV0 {
+    type R = PartitionOffsetFetchResponseV0;
+
+    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         try_multi!(
-            self.header.decode(buffer),
-            self.topic_partitions.decode(buffer)
+            self.partition.decode(buffer),
+            self.offset.decode(buffer),
+            self.metadata.decode(buffer),
+            self.error.decode(buffer)
         )
     }
 }
@@ -243,6 +354,7 @@ impl FromByte for PartitionOffsetFetchResponse {
         try_multi!(
             self.partition.decode(buffer),
             self.offset.decode(buffer),
+            self.committed_leader_epoch.decode(buffer),
             self.metadata.decode(buffer),
             self.error.decode(buffer)
         )
@@ -261,6 +373,11 @@ pub enum OffsetCommitVersion {
     /// supported as of kafka 0.9.0, causes offsets to be stored
     /// directly in kafka
     V2 = 2,
+    V3 = 3,
+    V4 = 4,
+    V5 = 5,
+    V6 = 6,
+    V7 = 7,
 }
 
 impl OffsetCommitVersion {
@@ -269,6 +386,11 @@ impl OffsetCommitVersion {
             0 => Self::V0,
             1 => Self::V1,
             2 => Self::V2,
+            3 => Self::V3,
+            4 => Self::V4,
+            5 => Self::V5,
+            6 => Self::V6,
+            7 => Self::V7,
             _ => panic!("Unknown offset commit version code: {n}"),
         }
     }
@@ -278,6 +400,9 @@ impl OffsetCommitVersion {
 pub struct OffsetCommitRequest<'a, 'b> {
     pub header: HeaderRequest<'a>,
     pub group: &'b str,
+    pub generation_id_or_member_epoch: i32,
+    pub member_id: &'a str,
+    pub group_instance_id: Option<&'a str>,
     pub topic_partitions: Vec<TopicPartitionOffsetCommitRequest<'b>>,
 }
 
@@ -291,6 +416,7 @@ pub struct TopicPartitionOffsetCommitRequest<'a> {
 pub struct PartitionOffsetCommitRequest<'a> {
     pub partition: i32,
     pub offset: i64,
+    pub committed_leader_epoch: i32,
     pub metadata: &'a str,
 }
 
@@ -309,6 +435,9 @@ impl<'a, 'b> OffsetCommitRequest<'a, 'b> {
                 client_id,
             ),
             group,
+            generation_id_or_member_epoch: -1,
+            member_id: "",
+            group_instance_id: None,
             topic_partitions: vec![],
         }
     }
@@ -346,6 +475,7 @@ impl<'a> PartitionOffsetCommitRequest<'a> {
         PartitionOffsetCommitRequest {
             partition,
             offset,
+            committed_leader_epoch: -1,
             metadata,
         }
     }
@@ -366,6 +496,24 @@ impl ToByte for OffsetCommitRequest<'_, '_> {
                 "".encode(buffer)?;
                 (-1i64).encode(buffer)?;
             }
+            OffsetCommitVersion::V3 | OffsetCommitVersion::V4 => {
+                self.generation_id_or_member_epoch.encode(buffer)?;
+                self.member_id.encode(buffer)?;
+                (-1i64).encode(buffer)?;
+            }
+            OffsetCommitVersion::V5 => {
+                self.generation_id_or_member_epoch.encode(buffer)?;
+                self.member_id.encode(buffer)?;
+            }
+            OffsetCommitVersion::V6 => {
+                self.generation_id_or_member_epoch.encode(buffer)?;
+                self.member_id.encode(buffer)?;
+            }
+            OffsetCommitVersion::V7 => {
+                self.generation_id_or_member_epoch.encode(buffer)?;
+                self.member_id.encode(buffer)?;
+                self.group_instance_id.encode(buffer)?;
+            }
             OffsetCommitVersion::V0 => {
                 // nothing to do
             }
@@ -379,6 +527,9 @@ impl ToByte for OffsetCommitRequest<'_, '_> {
                     if v == OffsetCommitVersion::V1 {
                         (-1i64).encode(buffer)?;
                     }
+                    if v == OffsetCommitVersion::V6 || v == OffsetCommitVersion::V7 {
+                        p.committed_leader_epoch.encode(buffer)?;
+                    }
                     p.metadata.encode(buffer)
                 })
             )
@@ -391,6 +542,7 @@ impl ToByte for OffsetCommitRequest<'_, '_> {
 #[derive(Default, Debug)]
 pub struct OffsetCommitResponse {
     pub header: HeaderResponse,
+    pub throttle_time_ms: i32,
     pub topic_partitions: Vec<TopicPartitionOffsetCommitResponse>,
 }
 
@@ -398,10 +550,31 @@ impl FromByte for OffsetCommitResponse {
     type R = OffsetCommitResponse;
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
-        try_multi!(
-            self.header.decode(buffer),
-            self.topic_partitions.decode(buffer)
-        )
+        self.header.decode(buffer)?;
+
+        let mut rest = Vec::new();
+        buffer.read_to_end(&mut rest)?;
+
+        // Prefer the modern (v3+) shape first, then fall back to v0-v2.
+        let mut modern = Cursor::new(rest.as_slice());
+        let mut throttle_time_ms = 0i32;
+        let mut topic_partitions = Vec::<TopicPartitionOffsetCommitResponse>::new();
+        if throttle_time_ms.decode(&mut modern).is_ok()
+            && topic_partitions.decode(&mut modern).is_ok()
+            && modern.position() as usize == rest.len()
+        {
+            self.throttle_time_ms = throttle_time_ms;
+            self.topic_partitions = topic_partitions;
+            return Ok(());
+        }
+
+        let mut legacy = Cursor::new(rest.as_slice());
+        self.topic_partitions.decode(&mut legacy)?;
+        if legacy.position() as usize != rest.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+        self.throttle_time_ms = 0;
+        Ok(())
     }
 }
 
@@ -436,5 +609,105 @@ impl FromByte for PartitionOffsetCommitResponse {
 
     fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
         try_multi!(self.partition.decode(buffer), self.error.decode(buffer))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::codecs::{FromByte, ToByte};
+
+    use super::{
+        GroupCoordinatorRequest, OffsetCommitRequest, OffsetCommitResponse, OffsetCommitVersion,
+        OffsetFetchResponse,
+    };
+
+    #[test]
+    fn test_group_coordinator_request_v2_encoding() {
+        let req = GroupCoordinatorRequest::new("group-a", 42, "client-a");
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+
+        // api_key=10, api_version=2
+        assert_eq!(&buf[0..4], &[0, 10, 0, 2]);
+    }
+
+    #[test]
+    fn test_offset_commit_request_v7_encoding() {
+        let mut req = OffsetCommitRequest::new("group-a", OffsetCommitVersion::V7, 42, "client-a");
+        req.add("topic-a", 1, 100, "m");
+
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+
+        // api_key=8, api_version=7
+        assert_eq!(&buf[0..4], &[0, 8, 0, 7]);
+        // Nullable group_instance_id is encoded as null by default (-1 i16)
+        assert!(buf.windows(2).any(|w| w == [0xff, 0xff]));
+    }
+
+    #[test]
+    fn test_offset_fetch_response_v5_decoding_and_group_error() {
+        let mut buf = Vec::new();
+        (42i32).encode(&mut buf).unwrap(); // correlation
+        (10i32).encode(&mut buf).unwrap(); // throttle_time_ms
+        (1i32).encode(&mut buf).unwrap(); // topics len
+        "topic-a".encode(&mut buf).unwrap();
+        (1i32).encode(&mut buf).unwrap(); // partitions len
+        (1i32).encode(&mut buf).unwrap(); // partition
+        (100i64).encode(&mut buf).unwrap(); // committed_offset
+        (3i32).encode(&mut buf).unwrap(); // committed_leader_epoch
+        "meta".encode(&mut buf).unwrap();
+        (0i16).encode(&mut buf).unwrap(); // partition error
+        (0i16).encode(&mut buf).unwrap(); // group error code
+
+        let resp = OffsetFetchResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 42);
+        assert_eq!(resp.throttle_time_ms, 10);
+        assert!(resp.group_error().is_none());
+        let p = &resp.topic_partitions[0].partitions[0];
+        assert_eq!(p.partition, 1);
+        assert_eq!(p.offset, 100);
+        assert_eq!(p.committed_leader_epoch, 3);
+    }
+
+    #[test]
+    fn test_offset_fetch_response_v0_decoding_compatibility() {
+        let mut buf = Vec::new();
+        (42i32).encode(&mut buf).unwrap(); // correlation
+        (1i32).encode(&mut buf).unwrap(); // topics len
+        "topic-a".encode(&mut buf).unwrap();
+        (1i32).encode(&mut buf).unwrap(); // partitions len
+        (1i32).encode(&mut buf).unwrap(); // partition
+        (100i64).encode(&mut buf).unwrap(); // committed_offset
+        "meta".encode(&mut buf).unwrap();
+        (0i16).encode(&mut buf).unwrap(); // partition error
+
+        let resp = OffsetFetchResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 42);
+        assert_eq!(resp.throttle_time_ms, 0);
+        assert!(resp.group_error().is_none());
+        let p = &resp.topic_partitions[0].partitions[0];
+        assert_eq!(p.partition, 1);
+        assert_eq!(p.offset, 100);
+        assert_eq!(p.committed_leader_epoch, -1);
+    }
+
+    #[test]
+    fn test_offset_commit_response_v0_decoding_compatibility() {
+        let mut buf = Vec::new();
+        (77i32).encode(&mut buf).unwrap(); // correlation
+        (1i32).encode(&mut buf).unwrap(); // topics len
+        "topic-a".encode(&mut buf).unwrap();
+        (1i32).encode(&mut buf).unwrap(); // partitions len
+        (2i32).encode(&mut buf).unwrap(); // partition
+        (0i16).encode(&mut buf).unwrap(); // error
+
+        let resp = OffsetCommitResponse::decode_new(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(resp.header.correlation, 77);
+        assert_eq!(resp.throttle_time_ms, 0);
+        assert_eq!(resp.topic_partitions.len(), 1);
+        assert_eq!(resp.topic_partitions[0].partitions[0].partition, 2);
     }
 }
