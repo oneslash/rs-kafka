@@ -36,7 +36,14 @@ impl<'a, T: AsRef<str>> MetadataRequest<'a, T> {
 impl<'a, T: AsRef<str> + 'a> ToByte for MetadataRequest<'a, T> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.header.encode(buffer)?;
-        AsStrings(self.topics).encode(buffer)?;
+        // For metadata requests, a null topic array means "all topics".
+        // With modern broker versions, an empty (non-null) array can yield
+        // an empty response set instead.
+        if self.topics.is_empty() {
+            (-1i32).encode(buffer)?;
+        } else {
+            AsStrings(self.topics).encode(buffer)?;
+        }
         if self.header.api_version >= 4 {
             self.allow_auto_topic_creation.encode(buffer)?;
         }
@@ -170,6 +177,20 @@ mod tests {
 
         // api_key=3, api_version=8
         assert_eq!(&buf[0..4], &[0, 3, 0, 8]);
+    }
+
+    #[test]
+    fn test_metadata_request_empty_topics_encodes_null_array() {
+        let topics: Vec<String> = vec![];
+        let req = MetadataRequest::new(77, "client-a", &topics);
+
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+
+        // Header (i16 key + i16 version + i32 correlation + string client_id)
+        let header_len = 2 + 2 + 4 + 2 + "client-a".len();
+        // topics array length should be null (-1)
+        assert_eq!(&buf[header_len..header_len + 4], &[0xff, 0xff, 0xff, 0xff]);
     }
 
     #[test]
