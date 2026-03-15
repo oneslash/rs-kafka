@@ -40,6 +40,4 @@ pub mod producer;
 mod protocol;
 mod utils;
 
-pub(crate) const MAX_RESPONSE_FRAME_BYTES: usize = 64 * 1024 * 1024;
-
 pub use self::error::{Error, Result};

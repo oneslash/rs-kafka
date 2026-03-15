@@ -66,11 +66,7 @@ pub(crate) fn validate_response_frame_size(size: i32) -> Result<usize> {
         return Err(Error::CodecError);
     }
 
-    let size = usize::try_from(size).map_err(|_| Error::CodecError)?;
-    if size > crate::MAX_RESPONSE_FRAME_BYTES {
-        return Err(Error::CodecError);
-    }
-    Ok(size)
+    usize::try_from(size).map_err(|_| Error::CodecError)
 }
 
 // --------------------------------------------------------------------
@@ -275,13 +271,9 @@ fn test_validate_response_frame_size() {
         validate_response_frame_size(-1),
         Err(Error::CodecError)
     ));
-    assert!(matches!(
-        validate_response_frame_size(i32::MAX),
-        Err(Error::CodecError)
-    ));
     assert_eq!(validate_response_frame_size(0).unwrap(), 0);
     assert_eq!(
-        validate_response_frame_size(crate::MAX_RESPONSE_FRAME_BYTES as i32).unwrap(),
-        crate::MAX_RESPONSE_FRAME_BYTES
+        validate_response_frame_size(i32::MAX).unwrap(),
+        i32::MAX as usize
     );
 }

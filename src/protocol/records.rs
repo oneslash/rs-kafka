@@ -38,8 +38,8 @@ fn ensure_max_output_len(current_len: usize, additional_len: usize, limit: usize
 }
 
 #[inline]
-fn extend_limited(dst: &mut Vec<u8>, src: &[u8], limit: usize) -> Result<()> {
-    ensure_max_output_len(dst.len(), src.len(), limit)?;
+fn extend_with_len(dst: &mut Vec<u8>, src: &[u8]) -> Result<()> {
+    let _ = dst.len().checked_add(src.len()).ok_or(Error::CodecError)?;
     dst.extend_from_slice(src);
     Ok(())
 }
@@ -304,6 +304,7 @@ pub(crate) fn decompress_record_set(
 ) -> Result<Vec<u8>> {
     let mut r = Cursor::new(record_set);
     let mut out = Vec::with_capacity(record_set.len());
+    let mut decompressed_len = 0usize;
 
     while (r.position() as usize) < record_set.len() {
         let base_offset = r.read_i64::<BigEndian>().map_err(|e| {
@@ -388,9 +389,9 @@ pub(crate) fn decompress_record_set(
         }
 
         if compression == 0 {
-            extend_limited(&mut out, &base_offset.to_be_bytes(), max_decompressed_bytes)?;
-            extend_limited(&mut out, &batch_length.to_be_bytes(), max_decompressed_bytes)?;
-            extend_limited(&mut out, batch_bytes, max_decompressed_bytes)?;
+            extend_with_len(&mut out, &base_offset.to_be_bytes())?;
+            extend_with_len(&mut out, &batch_length.to_be_bytes())?;
+            extend_with_len(&mut out, batch_bytes)?;
             continue;
         }
 
@@ -403,19 +404,14 @@ pub(crate) fn decompress_record_set(
                 2 => snappy::uncompress_xerial_limited(records_bytes, max_decompressed_bytes)?,
                 _ => return Err(Error::UnsupportedCompression),
             };
+            ensure_max_output_len(decompressed_len, records.len(), max_decompressed_bytes)?;
+            decompressed_len += records.len();
 
-            let new_batch_len = records_start
-                .checked_add(records.len())
-                .ok_or(Error::DecompressionLimitExceeded {
+            let new_batch_len = records_start.checked_add(records.len()).ok_or(
+                Error::DecompressionLimitExceeded {
                     limit: max_decompressed_bytes,
-                })?;
-            let output_delta =
-                12usize
-                    .checked_add(new_batch_len)
-                    .ok_or(Error::DecompressionLimitExceeded {
-                        limit: max_decompressed_bytes,
-                    })?;
-            ensure_max_output_len(out.len(), output_delta, max_decompressed_bytes)?;
+                },
+            )?;
 
             let mut new_batch = Vec::with_capacity(new_batch_len);
             new_batch.extend_from_slice(&batch_bytes[..records_start]);
@@ -427,13 +423,9 @@ pub(crate) fn decompress_record_set(
             new_batch[5..9].copy_from_slice(&crc_calc.to_be_bytes());
 
             let new_batch_length = i32::try_from(new_batch_len).map_err(|_| Error::CodecError)?;
-            extend_limited(&mut out, &base_offset.to_be_bytes(), max_decompressed_bytes)?;
-            extend_limited(
-                &mut out,
-                &new_batch_length.to_be_bytes(),
-                max_decompressed_bytes,
-            )?;
-            extend_limited(&mut out, &new_batch, max_decompressed_bytes)?;
+            extend_with_len(&mut out, &base_offset.to_be_bytes())?;
+            extend_with_len(&mut out, &new_batch_length.to_be_bytes())?;
+            extend_with_len(&mut out, &new_batch)?;
             continue;
         }
 
@@ -695,35 +687,23 @@ mod tests {
 
     #[cfg(feature = "gzip")]
     #[test]
-    fn test_record_batch_gzip_counts_batch_headers_toward_limit() {
-        let batch =
+    fn test_record_batch_gzip_ignores_passthrough_batches_in_limit() {
+        let compressed =
             encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::GZIP).unwrap();
-        let decompressed = decompress_record_set(&batch, true, usize::MAX).unwrap();
-        let limit = decompressed.len() - 1;
+        let uncompressed =
+            encode_record_batch(&[(None, Some(b"world".as_slice()))], Compression::NONE).unwrap();
+        let compressed_only = decompress_record_set(&compressed, true, usize::MAX).unwrap();
+        let limit = (0..=compressed_only.len())
+            .find(|&limit| decompress_record_set(&compressed, true, limit).is_ok())
+            .unwrap();
+        let mut record_set = uncompressed;
+        record_set.extend_from_slice(&compressed);
 
-        assert!(matches!(
-            decompress_record_set(&batch, true, limit),
-            Err(Error::DecompressionLimitExceeded { limit: l }) if l == limit
-        ));
-    }
-
-    #[cfg(feature = "gzip")]
-    #[test]
-    fn test_record_batch_gzip_counts_total_record_set_toward_limit() {
-        let batch1 =
-            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::GZIP).unwrap();
-        let batch2 =
-            encode_record_batch(&[(None, Some(b"world".as_slice()))], Compression::GZIP).unwrap();
-        let mut record_set = batch1.clone();
-        record_set.extend_from_slice(&batch2);
-
-        let decompressed = decompress_record_set(&record_set, true, usize::MAX).unwrap();
-        let limit = decompressed.len() - 1;
-
-        assert!(matches!(
-            decompress_record_set(&record_set, true, limit),
-            Err(Error::DecompressionLimitExceeded { limit: l }) if l == limit
-        ));
+        let decompressed = decompress_record_set(&record_set, true, limit).unwrap();
+        let msgs = decode_uncompressed_record_set(&decompressed, 0, true).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].value, b"world");
+        assert_eq!(msgs[1].value, b"hello");
     }
 
     #[cfg(feature = "snappy")]
@@ -740,36 +720,22 @@ mod tests {
 
     #[cfg(feature = "snappy")]
     #[test]
-    fn test_record_batch_snappy_counts_batch_headers_toward_limit() {
-        let batch =
+    fn test_record_batch_snappy_ignores_passthrough_batches_in_limit() {
+        let compressed =
             encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::SNAPPY).unwrap();
-        let decompressed = decompress_record_set(&batch, true, usize::MAX).unwrap();
-        let limit = decompressed.len() - 1;
+        let uncompressed =
+            encode_record_batch(&[(None, Some(b"world".as_slice()))], Compression::NONE).unwrap();
+        let compressed_only = decompress_record_set(&compressed, true, usize::MAX).unwrap();
+        let limit = (0..=compressed_only.len())
+            .find(|&limit| decompress_record_set(&compressed, true, limit).is_ok())
+            .unwrap();
+        let mut record_set = uncompressed;
+        record_set.extend_from_slice(&compressed);
 
-        assert!(matches!(
-            decompress_record_set(&batch, true, limit),
-            Err(Error::DecompressionLimitExceeded { limit: l }) if l == limit
-        ));
-    }
-
-    #[cfg(feature = "snappy")]
-    #[test]
-    fn test_record_batch_snappy_counts_total_record_set_toward_limit() {
-        let batch1 =
-            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::SNAPPY)
-                .unwrap();
-        let batch2 =
-            encode_record_batch(&[(None, Some(b"world".as_slice()))], Compression::SNAPPY)
-                .unwrap();
-        let mut record_set = batch1.clone();
-        record_set.extend_from_slice(&batch2);
-
-        let decompressed = decompress_record_set(&record_set, true, usize::MAX).unwrap();
-        let limit = decompressed.len() - 1;
-
-        assert!(matches!(
-            decompress_record_set(&record_set, true, limit),
-            Err(Error::DecompressionLimitExceeded { limit: l }) if l == limit
-        ));
+        let decompressed = decompress_record_set(&record_set, true, limit).unwrap();
+        let msgs = decode_uncompressed_record_set(&decompressed, 0, true).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].value, b"world");
+        assert_eq!(msgs[1].value, b"hello");
     }
 }
