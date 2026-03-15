@@ -29,16 +29,41 @@ pub fn compress_xerial(src: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn uncompress_to(src: &[u8], dst: &mut Vec<u8>) -> Result<()> {
+    uncompress_to_limit(src, dst, usize::MAX)
+}
+
+fn uncompress_to_limit(src: &[u8], dst: &mut Vec<u8>, max_output_size: usize) -> Result<()> {
     let min_len = snap::raw::decompress_len(src)?;
     if min_len > 0 {
         let off = dst.len();
-        dst.resize(off + min_len, 0);
+        let max_len = off
+            .checked_add(min_len)
+            .ok_or(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            })?;
+        if max_len > max_output_size {
+            return Err(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            });
+        }
+        dst.resize(max_len, 0);
         let uncompressed_len = {
             let buf = &mut dst.as_mut_slice()[off..off + min_len];
             snap::raw::Decoder::new().decompress(src, buf)?
         };
-        dst.truncate(off + uncompressed_len);
+        let final_len =
+            off.checked_add(uncompressed_len)
+                .ok_or(Error::DecompressionLimitExceeded {
+                    limit: max_output_size,
+                })?;
+        if final_len > max_output_size {
+            return Err(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            });
+        }
+        dst.truncate(final_len);
     }
     Ok(())
 }
@@ -88,6 +113,32 @@ fn validate_stream(mut stream: &[u8]) -> Result<&[u8]> {
     Ok(stream)
 }
 
+pub(crate) fn uncompress_xerial_limited(src: &[u8], max_output_size: usize) -> Result<Vec<u8>> {
+    let mut stream = validate_stream(src)?;
+    let mut out = Vec::new();
+    while !stream.is_empty() {
+        if stream.len() < 4 {
+            return Err(Error::UnexpectedEOF);
+        }
+        let chunk_size = BigEndian::read_i32(stream);
+        stream = &stream[4..];
+        if chunk_size <= 0 {
+            return Err(Error::InvalidSnappy(snap::Error::UnsupportedChunkLength {
+                len: u64::from(chunk_size.unsigned_abs()),
+                header: false,
+            }));
+        }
+        let chunk_size = usize::try_from(chunk_size).map_err(|_| Error::CodecError)?;
+        if chunk_size > stream.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+        let (chunk, rest) = stream.split_at(chunk_size);
+        uncompress_to_limit(chunk, &mut out, max_output_size)?;
+        stream = rest;
+    }
+    Ok(out)
+}
+
 #[test]
 fn test_validate_stream() {
     let header = [
@@ -103,6 +154,7 @@ fn test_validate_stream() {
 // ~ An implementation of a reader over a stream of snappy compressed
 // chunks as produced by org.xerial.snappy.SnappyOutputStream
 // (https://github.com/xerial/snappy-java/ version: 1.1.1.*)
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SnappyReader<'a> {
     // the compressed data itself
     compressed_data: &'a [u8],
@@ -114,6 +166,7 @@ pub struct SnappyReader<'a> {
     uncompressed_chunk: Vec<u8>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl SnappyReader<'_> {
     pub fn new(mut stream: &[u8]) -> Result<SnappyReader<'_>> {
         stream = validate_stream(stream)?;
@@ -154,6 +207,9 @@ impl SnappyReader<'_> {
             }));
         }
         let chunk_size = usize::try_from(chunk_size).map_err(|_| Error::CodecError)?;
+        if chunk_size > self.compressed_data.len() {
+            return Err(Error::UnexpectedEOF);
+        }
         self.uncompressed_chunk.clear();
         uncompress_to(
             &self.compressed_data[..chunk_size],
@@ -181,6 +237,9 @@ impl SnappyReader<'_> {
                 }));
             }
             let chunk_size = usize::try_from(chunk_size).map_err(|_| Error::CodecError)?;
+            if chunk_size > self.compressed_data.len() {
+                return Err(Error::UnexpectedEOF);
+            }
             let (c1, c2) = self.compressed_data.split_at(chunk_size);
             uncompress_to(c1, buf)?;
             self.compressed_data = c2;
@@ -218,7 +277,9 @@ mod tests {
     use std::io::Read;
     use std::str;
 
-    use super::{SnappyReader, compress, uncompress_to};
+    use super::{
+        SnappyReader, compress, compress_xerial, uncompress_to, uncompress_xerial_limited,
+    };
     use crate::error::{Error, Result};
 
     fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
@@ -281,5 +342,31 @@ mod tests {
         let mut r = SnappyReader::new(COMPRESSED).unwrap();
         r.read_to_end(&mut buf).unwrap();
         assert_eq!(ORIGINAL, str::from_utf8(&buf[..]).unwrap());
+    }
+
+    #[test]
+    fn test_snappy_reader_truncated_chunk_returns_error() {
+        let malformed = [
+            0x82, b'S', b'N', b'A', b'P', b'P', b'Y', 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 8, 1, 2,
+            3, 4,
+        ];
+
+        let mut reader = SnappyReader::new(&malformed).unwrap();
+        let mut buf = [0u8; 16];
+        assert!(reader.read(&mut buf).is_err());
+
+        let mut reader = SnappyReader::new(&malformed).unwrap();
+        let mut out = Vec::new();
+        assert!(reader.read_to_end(&mut out).is_err());
+    }
+
+    #[test]
+    fn test_uncompress_xerial_limited_rejects_oversized_output() {
+        let payload = vec![b'a'; 8 * 1024];
+        let compressed = compress_xerial(&payload).unwrap();
+        assert!(matches!(
+            uncompress_xerial_limited(&compressed, 1024),
+            Err(Error::DecompressionLimitExceeded { limit: 1024 })
+        ));
     }
 }

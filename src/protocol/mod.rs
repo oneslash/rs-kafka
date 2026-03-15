@@ -61,6 +61,16 @@ const API_VERSION: i16 = 0;
 
 // --------------------------------------------------------------------
 
+pub(crate) fn validate_response_frame_size(size: i32) -> Result<usize> {
+    if size < 0 {
+        return Err(Error::CodecError);
+    }
+
+    usize::try_from(size).map_err(|_| Error::CodecError)
+}
+
+// --------------------------------------------------------------------
+
 /// Provides a way to parse the full raw response data into a
 /// particular response structure.
 pub trait ResponseParser {
@@ -253,4 +263,17 @@ fn test_to_millis_i32() {
     assert_invalid(Duration::from_millis(u64::from(u32::MAX)));
     assert_invalid(Duration::from_millis(i32::MAX as u64 + 1));
     assert_valid(Duration::from_millis(i32::MAX as u64 - 1), i32::MAX - 1);
+}
+
+#[test]
+fn test_validate_response_frame_size() {
+    assert!(matches!(
+        validate_response_frame_size(-1),
+        Err(Error::CodecError)
+    ));
+    assert_eq!(validate_response_frame_size(0).unwrap(), 0);
+    assert_eq!(
+        validate_response_frame_size(i32::MAX).unwrap(),
+        i32::MAX as usize
+    );
 }

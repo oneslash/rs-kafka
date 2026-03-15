@@ -380,8 +380,8 @@ impl KafkaConnection {
         r
     }
 
-    pub fn read_exact_alloc(&mut self, size: u64) -> Result<Vec<u8>> {
-        let mut buffer = vec![0; size as usize];
+    pub fn read_exact_alloc(&mut self, size: usize) -> Result<Vec<u8>> {
+        let mut buffer = vec![0; size];
         self.read_exact(buffer.as_mut_slice())?;
         Ok(buffer)
     }
@@ -501,8 +501,8 @@ fn __send_request<T: ToByte>(conn: &mut KafkaConnection, request: T) -> Result<u
 }
 
 fn __get_response<T: FromByte>(conn: &mut KafkaConnection) -> Result<T::R> {
-    let size = __get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(size as u64)?;
+    let size = crate::protocol::validate_response_frame_size(__get_response_size(conn)?)?;
+    let resp = conn.read_exact_alloc(size)?;
     T::decode_new(&mut Cursor::new(resp))
 }
 

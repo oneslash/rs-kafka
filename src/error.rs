@@ -54,6 +54,11 @@ pub enum Error {
     #[error("Encoding/Decoding Error")]
     CodecError,
 
+    /// Failure to decode compressed payload because the decompressed
+    /// size exceeds the configured client-side limit.
+    #[error("Decompressed payload exceeds configured limit of {limit} bytes")]
+    DecompressionLimitExceeded { limit: usize },
+
     /// Failure to decode a string into a valid utf8 byte sequence
     #[error("String decoding error")]
     StringDecodeError,

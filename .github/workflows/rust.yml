@@ -46,16 +46,19 @@ jobs:
           - KAFKA_VER: 4.1.0
             COMPRESSION: NONE
             SECURE: ""
-          - KAFKA_VER: 4.1.0
+          - KAFKA_VER: 4.2.0
+            COMPRESSION: NONE
+            SECURE: ""
+          - KAFKA_VER: 4.2.0
             COMPRESSION: GZIP
             SECURE: ""
-          - KAFKA_VER: 4.1.0
+          - KAFKA_VER: 4.2.0
             COMPRESSION: SNAPPY
             SECURE: ""
-          - KAFKA_VER: 4.1.0
+          - KAFKA_VER: 4.2.0
             COMPRESSION: NONE
             SECURE: tls
-          - KAFKA_VER: 4.1.0
+          - KAFKA_VER: 4.2.0
             COMPRESSION: NONE
             SECURE: sasl_plaintext
     steps:

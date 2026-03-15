@@ -2,6 +2,7 @@ use std::collections::hash_map::{Entry, HashMap, Keys};
 use std::convert::AsRef;
 use std::slice;
 
+use crate::error::{Error, Result};
 use crate::protocol;
 
 #[derive(Debug)]
@@ -31,7 +32,7 @@ pub struct ClientState {
 // ~ note: this type is re-exported to the crate's public api through
 // client::metadata
 /// Describes a Kafka broker node `kafkang` is communicating with.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Broker {
     /// The identifier of this broker as understood in a Kafka
     /// cluster.
@@ -99,7 +100,7 @@ impl BrokerRef {
 // --------------------------------------------------------------------
 
 /// A representation of partitions for a single topic.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TopicPartitions {
     // ~ This list keeps information about each partition of the
     // corresponding topic - even about partitions currently without a
@@ -147,7 +148,7 @@ impl<'a> IntoIterator for &'a TopicPartitions {
 }
 
 /// Metadata for a single topic partition.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TopicPartition {
     broker: BrokerRef,
 }
@@ -268,18 +269,21 @@ impl ClientState {
 
     /// Loads new and updates existing metadata from the given
     /// metadata response.
-    pub fn update_metadata(&mut self, md: protocol::MetadataResponse) {
+    pub fn update_metadata(&mut self, md: protocol::MetadataResponse) -> Result<()> {
         debug!("updating metadata from: {:?}", md);
+
+        let mut brokers_state = self.brokers.clone();
+        let mut topic_partitions = self.topic_partitions.clone();
 
         // ~ register new brokers with self.brokers and obtain an
         // index over them by broker-node-id
-        let brokers = self.update_brokers(&md);
+        let brokers = Self::update_brokers(&mut brokers_state, &md);
 
         // ~ now update partitions
         for t in md.topics {
             // ~ get a mutable reference to the partitions vector
             // (maintained in self.topic_partitions) for the topic
-            let tps = match self.topic_partitions.entry(t.topic) {
+            let tps = match topic_partitions.entry(t.topic) {
                 Entry::Occupied(e) => {
                     let ps = &mut e.into_mut().partitions;
                     match (ps.len(), t.partitions.len()) {
@@ -302,7 +306,11 @@ impl ClientState {
             };
             // ~ sync the partitions vector with the new information
             for partition in t.partitions {
-                let tp = &mut tps[partition.id as usize];
+                let partition_id = usize::try_from(partition.id).map_err(|_| Error::CodecError)?;
+                if partition_id >= tps.len() {
+                    return Err(Error::CodecError);
+                }
+                let tp = &mut tps[partition_id];
                 if let Some(bref) = brokers.get(&partition.leader) {
                     tp.broker.set(*bref);
                 } else {
@@ -310,15 +318,20 @@ impl ClientState {
                 }
             }
         }
-        // Ok(())
+        self.brokers = brokers_state;
+        self.topic_partitions = topic_partitions;
+        Ok(())
     }
 
     /// Updates self.brokers from the given metadata returning an
     /// index `NodeId -> BrokerRef`
-    fn update_brokers(&mut self, md: &protocol::MetadataResponse) -> HashMap<i32, BrokerRef> {
+    fn update_brokers(
+        brokers_state: &mut Vec<Broker>,
+        md: &protocol::MetadataResponse,
+    ) -> HashMap<i32, BrokerRef> {
         // ~ build an index of the already loaded brokers -- if any
-        let mut brokers = HashMap::with_capacity(self.brokers.len() + md.brokers.len());
-        for (i, broker) in (0u32..).zip(self.brokers.iter()) {
+        let mut brokers = HashMap::with_capacity(brokers_state.len() + md.brokers.len());
+        for (i, broker) in (0u32..).zip(brokers_state.iter()) {
             brokers.insert(broker.node_id, BrokerRef::new(i));
         }
 
@@ -331,15 +344,15 @@ impl ClientState {
                     // ~ verify our information of the already tracked
                     // broker is up-to-date
                     let bref = *e.get();
-                    let b = &mut self.brokers[bref.index()];
+                    let b = &mut brokers_state[bref.index()];
                     if b.host != broker_host {
                         b.host = broker_host;
                     }
                 }
                 Entry::Vacant(e) => {
                     // ~ insert the new broker
-                    let new_index = self.brokers.len();
-                    self.brokers.push(Broker {
+                    let new_index = brokers_state.len();
+                    brokers_state.push(Broker {
                         node_id: broker.node_id,
                         host: broker_host,
                     });
@@ -660,12 +673,52 @@ mod tests {
     fn test_loading_metadata() {
         let mut state = ClientState::new();
         // Test loading metadata into a new, empty client state.
-        state.update_metadata(metadata_response_initial());
+        state.update_metadata(metadata_response_initial()).unwrap();
         assert_initial_metadata_load(&state);
 
         // Test loading a metadata update into a client state with
         // already some initial metadata loaded.
-        state.update_metadata(metadata_response_update());
+        state.update_metadata(metadata_response_update()).unwrap();
         assert_updated_metadata_load(&state);
+    }
+
+    #[test]
+    fn test_loading_metadata_rejects_negative_partition_id() {
+        let mut state = ClientState::new();
+        let mut md = metadata_response_initial();
+        md.topics[0].partitions[0].id = -1;
+
+        assert!(matches!(
+            state.update_metadata(md),
+            Err(crate::Error::CodecError)
+        ));
+        assert_eq!(state.num_topics(), 0);
+    }
+
+    #[test]
+    fn test_loading_metadata_keeps_existing_state_when_update_is_rejected() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial()).unwrap();
+
+        let mut md = metadata_response_update();
+        md.topics[0].partitions[0].id = -1;
+
+        assert!(matches!(
+            state.update_metadata(md),
+            Err(crate::Error::CodecError)
+        ));
+        assert_initial_metadata_load(&state);
+    }
+
+    #[test]
+    fn test_loading_metadata_rejects_out_of_range_partition_id() {
+        let mut state = ClientState::new();
+        let mut md = metadata_response_initial();
+        md.topics[0].partitions[0].id = 99;
+
+        assert!(matches!(
+            state.update_metadata(md),
+            Err(crate::Error::CodecError)
+        ));
     }
 }

@@ -75,6 +75,9 @@ pub const DEFAULT_FETCH_MAX_BYTES_PER_PARTITION: i32 = 32 * 1024;
 /// The default value for `KafkaClient::set_fetch_crc_validation(..)`
 pub const DEFAULT_FETCH_CRC_VALIDATION: bool = true;
 
+/// The default value for `KafkaClient::set_max_decompressed_bytes(..)`
+pub const DEFAULT_MAX_DECOMPRESSED_BYTES: usize = 64 * 1024 * 1024;
+
 /// The default value for `KafkaClient::set_group_offset_storage(..)`
 pub const DEFAULT_GROUP_OFFSET_STORAGE: Option<GroupOffsetStorage> = None;
 
@@ -121,6 +124,7 @@ struct ClientConfig {
     fetch_min_bytes: i32,
     fetch_max_bytes_per_partition: i32,
     fetch_crc_validation: bool,
+    max_decompressed_bytes: usize,
     // ~ the version of the API to use for the corresponding kafka
     // calls; note that this might have an effect on the storage type
     // kafka will then use (zookeeper or __consumer_offsets).  it is
@@ -418,6 +422,7 @@ impl KafkaClient {
                 fetch_min_bytes: DEFAULT_FETCH_MIN_BYTES,
                 fetch_max_bytes_per_partition: DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
                 fetch_crc_validation: DEFAULT_FETCH_CRC_VALIDATION,
+                max_decompressed_bytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
                 offset_storage: DEFAULT_GROUP_OFFSET_STORAGE,
                 retry_backoff_time: Duration::from_millis(DEFAULT_RETRY_BACKOFF_TIME_MILLIS),
                 retry_max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
@@ -482,6 +487,7 @@ impl KafkaClient {
                 fetch_min_bytes: DEFAULT_FETCH_MIN_BYTES,
                 fetch_max_bytes_per_partition: DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
                 fetch_crc_validation: DEFAULT_FETCH_CRC_VALIDATION,
+                max_decompressed_bytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
                 offset_storage: DEFAULT_GROUP_OFFSET_STORAGE,
                 retry_backoff_time: Duration::from_millis(DEFAULT_RETRY_BACKOFF_TIME_MILLIS),
                 retry_max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
@@ -628,6 +634,10 @@ impl KafkaClient {
     /// thus be determined by the number of partitions in the fetch
     /// messages request times this "max bytes per partitions."
     ///
+    /// This limit applies to the compressed bytes returned by the
+    /// broker. To bound client-side expansion after fetch, see
+    /// `KafkaClient::set_max_decompressed_bytes`.
+    ///
     /// This client will use this setting by default for all queried
     /// partitions, however, `fetch_messages` does allow you to
     /// override this setting for a particular partition being
@@ -665,6 +675,26 @@ impl KafkaClient {
     #[must_use]
     pub fn fetch_crc_validation(&self) -> bool {
         self.config.fetch_crc_validation
+    }
+
+    /// Sets the maximum number of bytes this client will allow a
+    /// fetched compressed payload to expand to after decompression.
+    ///
+    /// This is a client-side safety limit applied after the broker
+    /// has already returned the compressed bytes. It does not affect
+    /// Kafka fetch request sizing; see
+    /// `KafkaClient::set_fetch_max_bytes_per_partition` for that.
+    #[inline]
+    pub fn set_max_decompressed_bytes(&mut self, max_decompressed_bytes: usize) {
+        self.config.max_decompressed_bytes = max_decompressed_bytes;
+    }
+
+    /// Retrieves the current `KafkaClient::set_max_decompressed_bytes`
+    /// setting.
+    #[inline]
+    #[must_use]
+    pub fn max_decompressed_bytes(&self) -> usize {
+        self.config.max_decompressed_bytes
     }
 
     /// Specifies the group offset storage to address when fetching or
@@ -840,7 +870,7 @@ impl KafkaClient {
     #[inline]
     pub fn load_metadata<T: AsRef<str>>(&mut self, topics: &[T]) -> Result<()> {
         let resp = self.fetch_metadata(topics)?;
-        self.state.update_metadata(resp);
+        self.state.update_metadata(resp)?;
         Ok(())
     }
 
@@ -1683,6 +1713,7 @@ fn __fetch_messages(
     for (host, req) in reqs {
         let p = protocol::fetch::ResponseParser {
             validate_crc: config.fetch_crc_validation,
+            max_decompressed_bytes: config.max_decompressed_bytes,
             requests: Some(&req),
         };
         responses.push(__z_send_receive(conn_pool, host, now, &req, &p)?);
@@ -1768,8 +1799,8 @@ fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) ->
 }
 
 fn __get_response<T: FromByte>(conn: &mut network::KafkaConnection) -> Result<T::R> {
-    let size = __get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(size as u64)?;
+    let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
+    let resp = conn.read_exact_alloc(size)?;
 
     trace!("__get_response: received bytes: {:?}", &resp);
 
@@ -1810,8 +1841,8 @@ fn __z_get_response<P>(conn: &mut network::KafkaConnection, parser: &P) -> Resul
 where
     P: ResponseParser,
 {
-    let size = __get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(size as u64)?;
+    let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
+    let resp = conn.read_exact_alloc(size)?;
 
     // {
     //     use std::fs::OpenOptions;
@@ -1838,4 +1869,25 @@ fn __get_response_size(conn: &mut network::KafkaConnection) -> Result<i32> {
 /// method should be called _only_ as part of a retry attempt.
 fn __retry_sleep(cfg: &ClientConfig) {
     thread::sleep(cfg.retry_backoff_time);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_MAX_DECOMPRESSED_BYTES, KafkaClient};
+
+    #[test]
+    fn test_new_client_uses_default_max_decompressed_bytes() {
+        let client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
+        assert_eq!(
+            client.max_decompressed_bytes(),
+            DEFAULT_MAX_DECOMPRESSED_BYTES
+        );
+    }
+
+    #[test]
+    fn test_set_max_decompressed_bytes() {
+        let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
+        client.set_max_decompressed_bytes(1024);
+        assert_eq!(client.max_decompressed_bytes(), 1024);
+    }
 }

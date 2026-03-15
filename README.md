@@ -68,6 +68,7 @@ in production. See `docs/sasl.md`.
 - 3.9.1
 - 4.0.1
 - 4.1.0
+- 4.2.0
 
 ## Examples
 

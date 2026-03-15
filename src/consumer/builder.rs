@@ -29,6 +29,7 @@ pub struct Builder {
     fetch_max_bytes_per_partition: i32,
     retry_max_bytes_limit: i32,
     fetch_crc_validation: bool,
+    max_decompressed_bytes: usize,
     security_config: Option<SecurityConfig>,
     group_offset_storage: Option<GroupOffsetStorage>,
     conn_idle_timeout: Duration,
@@ -45,6 +46,7 @@ pub fn new(client: Option<KafkaClient>, hosts: Vec<String>) -> Builder {
         fetch_min_bytes: client::DEFAULT_FETCH_MIN_BYTES,
         fetch_max_bytes_per_partition: client::DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
         fetch_crc_validation: client::DEFAULT_FETCH_CRC_VALIDATION,
+        max_decompressed_bytes: client::DEFAULT_MAX_DECOMPRESSED_BYTES,
         retry_max_bytes_limit: DEFAULT_RETRY_MAX_BYTES_LIMIT,
         group: String::new(),
         assignments: HashMap::new(),
@@ -59,6 +61,7 @@ pub fn new(client: Option<KafkaClient>, hosts: Vec<String>) -> Builder {
         b.fetch_min_bytes = c.fetch_min_bytes();
         b.fetch_max_bytes_per_partition = c.fetch_max_bytes_per_partition();
         b.fetch_crc_validation = c.fetch_crc_validation();
+        b.max_decompressed_bytes = c.max_decompressed_bytes();
         b.group_offset_storage = c.group_offset_storage();
         b.conn_idle_timeout = c.connection_idle_timeout();
     }
@@ -162,6 +165,13 @@ impl Builder {
         self
     }
 
+    /// See `KafkaClient::set_max_decompressed_bytes`
+    #[must_use]
+    pub fn with_max_decompressed_bytes(mut self, max_decompressed_bytes: usize) -> Builder {
+        self.max_decompressed_bytes = max_decompressed_bytes;
+        self
+    }
+
     /// See `KafkaClient::set_group_offset_storage`
     #[must_use]
     pub fn with_offset_storage(mut self, storage: Option<GroupOffsetStorage>) -> Builder {
@@ -251,6 +261,8 @@ impl Builder {
         client.set_fetch_max_wait_time(self.fetch_max_wait_time)?;
         client.set_fetch_min_bytes(self.fetch_min_bytes);
         client.set_fetch_max_bytes_per_partition(self.fetch_max_bytes_per_partition);
+        client.set_fetch_crc_validation(self.fetch_crc_validation);
+        client.set_max_decompressed_bytes(self.max_decompressed_bytes);
         client.set_group_offset_storage(self.group_offset_storage);
         client.set_connection_idle_timeout(self.conn_idle_timeout);
         if let Some(client_id) = self.client_id {
@@ -276,5 +288,38 @@ impl Builder {
             state,
             config,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new;
+    use crate::client::{self, KafkaClient};
+
+    #[test]
+    fn test_builder_defaults_max_decompressed_bytes() {
+        let builder = new(None, Vec::new());
+        assert_eq!(
+            builder.max_decompressed_bytes,
+            client::DEFAULT_MAX_DECOMPRESSED_BYTES
+        );
+    }
+
+    #[test]
+    fn test_builder_inherits_client_max_decompressed_bytes() {
+        let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
+        client.set_max_decompressed_bytes(2048);
+
+        let builder = new(Some(client), Vec::new());
+        assert_eq!(builder.max_decompressed_bytes, 2048);
+    }
+
+    #[test]
+    fn test_builder_with_max_decompressed_bytes_overrides_value() {
+        let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
+        client.set_max_decompressed_bytes(2048);
+
+        let builder = new(Some(client), Vec::new()).with_max_decompressed_bytes(1024);
+        assert_eq!(builder.max_decompressed_bytes, 1024);
     }
 }

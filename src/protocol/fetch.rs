@@ -13,8 +13,6 @@ use crate::codecs::ToByte;
 use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
-#[cfg(feature = "snappy")]
-use crate::compression::snappy::SnappyReader;
 use crate::error::KafkaCode;
 use crate::{Error, Result};
 
@@ -229,13 +227,19 @@ impl PartitionFetchRequest {
 
 pub struct ResponseParser<'a, 'b, 'c> {
     pub validate_crc: bool,
+    pub max_decompressed_bytes: usize,
     pub requests: Option<&'c FetchRequest<'a, 'b>>,
 }
 
 impl super::ResponseParser for ResponseParser<'_, '_, '_> {
     type T = Response;
     fn parse(&self, response: Vec<u8>) -> Result<Self::T> {
-        Response::from_vec(response, self.requests, self.validate_crc)
+        Response::from_vec(
+            response,
+            self.requests,
+            self.validate_crc,
+            self.max_decompressed_bytes,
+        )
     }
 }
 
@@ -278,6 +282,7 @@ impl Response {
         response: Vec<u8>,
         reqs: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
+        max_decompressed_bytes: usize,
     ) -> Result<Response> {
         let slice: &'static [u8] = unsafe { mem::transmute::<&[u8], &'static [u8]>(&response[..]) };
         let mut r = ZReader::new(slice);
@@ -292,7 +297,16 @@ impl Response {
             let _ = r.read_i16()?;
             let _ = r.read_i32()?;
         }
-        let topics = array_of!(r, Topic::read(&mut r, reqs, validate_crc, api_version));
+        let topics = array_of!(
+            r,
+            Topic::read(
+                &mut r,
+                reqs,
+                validate_crc,
+                api_version,
+                max_decompressed_bytes
+            )
+        );
         Ok(Response {
             raw_data: response,
             correlation_id,
@@ -333,10 +347,14 @@ impl<'a> Topic<'a> {
         reqs: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
         api_version: i16,
+        max_decompressed_bytes: usize,
     ) -> Result<Topic<'a>> {
         let name = r.read_str()?;
         let preqs = reqs.and_then(|reqs| reqs.get(name));
-        let partitions = array_of!(r, Partition::read(r, preqs, validate_crc, api_version));
+        let partitions = array_of!(
+            r,
+            Partition::read(r, preqs, validate_crc, api_version, max_decompressed_bytes)
+        );
         Ok(Topic {
             topic: name,
             partitions,
@@ -381,6 +399,7 @@ impl<'a> Partition<'a> {
         preqs: Option<&TopicPartitionFetchRequest>,
         validate_crc: bool,
         api_version: i16,
+        max_decompressed_bytes: usize,
     ) -> Result<Partition<'a>> {
         let partition = r.read_i32()?;
         let proffs = preqs
@@ -410,9 +429,19 @@ impl<'a> Partition<'a> {
                 let _ = r.read_i32()?;
             }
             let record_set = r.read_bytes()?;
-            MessageSet::from_record_set_slice(record_set, proffs, validate_crc)?
+            MessageSet::from_record_set_slice(
+                record_set,
+                proffs,
+                validate_crc,
+                max_decompressed_bytes,
+            )?
         } else {
-            MessageSet::from_slice(r.read_bytes()?, proffs, validate_crc)?
+            MessageSet::from_slice(
+                r.read_bytes()?,
+                proffs,
+                validate_crc,
+                max_decompressed_bytes,
+            )?
         };
 
         Ok(Partition {
@@ -495,21 +524,31 @@ pub struct Message<'a> {
 
 impl<'a> MessageSet<'a> {
     #[allow(dead_code)]
-    fn from_vec(data: Vec<u8>, req_offset: i64, validate_crc: bool) -> Result<MessageSet<'a>> {
+    fn from_vec(
+        data: Vec<u8>,
+        req_offset: i64,
+        validate_crc: bool,
+        max_decompressed_bytes: usize,
+    ) -> Result<MessageSet<'a>> {
         // since we're going to keep the original
         // uncompressed vector around without
         // further modifying it and providing
         // publicly no mutability possibilities
         // this is safe
         let slice: &'a [u8] = unsafe { mem::transmute::<&[u8], &'a [u8]>(&data[..]) };
-        let ms = MessageSet::from_slice(slice, req_offset, validate_crc)?;
+        let ms = MessageSet::from_slice(slice, req_offset, validate_crc, max_decompressed_bytes)?;
         Ok(MessageSet {
             raw_data: Cow::Owned(data),
             messages: ms.messages,
         })
     }
 
-    fn from_slice(raw_data: &[u8], req_offset: i64, validate_crc: bool) -> Result<MessageSet<'_>> {
+    fn from_slice(
+        raw_data: &[u8],
+        req_offset: i64,
+        validate_crc: bool,
+        max_decompressed_bytes: usize,
+    ) -> Result<MessageSet<'_>> {
         let mut r = ZReader::new(raw_data);
         let mut msgs = Vec::new();
         while !r.is_empty() {
@@ -541,15 +580,26 @@ impl<'a> MessageSet<'a> {
                         // XXX handle recursive compression in future
                         #[cfg(feature = "gzip")]
                         c if c == Compression::GZIP as i8 => {
-                            let v = gzip::uncompress(pmsg.value)?;
-                            return MessageSet::from_vec(v, req_offset, validate_crc);
+                            let v = gzip::uncompress_limited(pmsg.value, max_decompressed_bytes)?;
+                            return MessageSet::from_vec(
+                                v,
+                                req_offset,
+                                validate_crc,
+                                max_decompressed_bytes,
+                            );
                         }
                         #[cfg(feature = "snappy")]
                         c if c == Compression::SNAPPY as i8 => {
-                            use std::io::Read;
-                            let mut v = Vec::new();
-                            SnappyReader::new(pmsg.value)?.read_to_end(&mut v)?;
-                            return MessageSet::from_vec(v, req_offset, validate_crc);
+                            let v = crate::compression::snappy::uncompress_xerial_limited(
+                                pmsg.value,
+                                max_decompressed_bytes,
+                            )?;
+                            return MessageSet::from_vec(
+                                v,
+                                req_offset,
+                                validate_crc,
+                                max_decompressed_bytes,
+                            );
                         }
                         _ => return Err(Error::UnsupportedCompression),
                     }
@@ -566,9 +616,10 @@ impl<'a> MessageSet<'a> {
         raw_data: &'a [u8],
         req_offset: i64,
         validate_crc: bool,
+        max_decompressed_bytes: usize,
     ) -> Result<MessageSet<'a>> {
         let (raw_data_cow, records) = if record_set_has_compressed_batches(raw_data)? {
-            let data = decompress_record_set(raw_data, validate_crc)?;
+            let data = decompress_record_set(raw_data, validate_crc, max_decompressed_bytes)?;
             let slice: &'a [u8] = unsafe { mem::transmute::<&[u8], &'a [u8]>(&data[..]) };
             (Cow::Owned(data), slice)
         } else {
@@ -643,9 +694,12 @@ impl ProtocolMessage<'_> {
 mod tests {
     use std::str;
 
-    use super::{FetchRequest, Message, Response};
+    use super::{FetchRequest, Message, MessageSet, Response};
+    use crate::client::DEFAULT_MAX_DECOMPRESSED_BYTES;
     use crate::codecs::ToByte;
+    use crate::compression::Compression;
     use crate::error::{Error, KafkaCode};
+    use crate::protocol::records::encode_record_batch;
 
     static FETCH1_TXT: &str = include_str!("../../test-data/fetch1.txt");
 
@@ -694,7 +748,12 @@ mod tests {
         requests: Option<&FetchRequest<'_, '_>>,
         validate_crc: bool,
     ) {
-        let resp = Response::from_vec(response, requests, validate_crc);
+        let resp = Response::from_vec(
+            response,
+            requests,
+            validate_crc,
+            DEFAULT_MAX_DECOMPRESSED_BYTES,
+        );
         let resp = resp.unwrap();
 
         let original: Vec<_> = msg_per_line.lines().collect();
@@ -760,9 +819,10 @@ mod tests {
             FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
             Some(&req),
             false,
+            DEFAULT_MAX_DECOMPRESSED_BYTES,
         );
         assert!(match r {
-            return Err(Error::UnsupportedCompression) => true,
+            Err(Error::UnsupportedCompression) => true,
             _ => false,
         });
     }
@@ -862,6 +922,7 @@ mod tests {
             FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900.to_owned(),
             None,
             true,
+            DEFAULT_MAX_DECOMPRESSED_BYTES,
         ) {
             Ok(_) => panic!("Expected error, but got successful response!"),
             Err(Error::Kafka(KafkaCode::CorruptMessage)) => {}
@@ -888,9 +949,98 @@ mod tests {
         (0i32).encode(&mut response).unwrap(); // session_id
         (0i32).encode(&mut response).unwrap(); // responses len
 
-        let parsed = Response::from_vec(response, Some(&req), true).unwrap();
+        let parsed =
+            Response::from_vec(response, Some(&req), true, DEFAULT_MAX_DECOMPRESSED_BYTES).unwrap();
         assert_eq!(parsed.correlation_id(), 1);
         assert!(parsed.topics().is_empty());
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn test_from_slice_gzip_respects_max_decompressed_bytes() {
+        let mut req = FetchRequest::new(0, "test", -1, -1);
+        req.add("my-topic", 0, 0, -1);
+
+        let resp = Response::from_vec(
+            FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
+            Some(&req),
+            false,
+            DEFAULT_MAX_DECOMPRESSED_BYTES,
+        );
+        assert!(resp.is_ok());
+
+        let resp = Response::from_vec(
+            FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
+            Some(&req),
+            false,
+            1,
+        );
+        assert!(matches!(
+            resp,
+            Err(Error::DecompressionLimitExceeded { limit: 1 })
+        ));
+    }
+
+    #[cfg(feature = "snappy")]
+    #[test]
+    fn test_from_slice_snappy_respects_max_decompressed_bytes() {
+        let mut req = FetchRequest::new(0, "test", -1, -1);
+        req.add("my-topic", 0, 0, -1);
+
+        let resp = Response::from_vec(
+            FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
+            Some(&req),
+            false,
+            DEFAULT_MAX_DECOMPRESSED_BYTES,
+        );
+        assert!(resp.is_ok());
+
+        let resp = Response::from_vec(
+            FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
+            Some(&req),
+            false,
+            1,
+        );
+        assert!(matches!(
+            resp,
+            Err(Error::DecompressionLimitExceeded { limit: 1 })
+        ));
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn test_from_record_set_slice_gzip_respects_max_decompressed_bytes() {
+        let batch =
+            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::GZIP).unwrap();
+
+        let msg_set =
+            MessageSet::from_record_set_slice(&batch, 0, true, DEFAULT_MAX_DECOMPRESSED_BYTES)
+                .unwrap();
+        assert_eq!(msg_set.messages.len(), 1);
+        assert_eq!(msg_set.messages[0].value, b"hello");
+
+        assert!(matches!(
+            MessageSet::from_record_set_slice(&batch, 0, true, 1),
+            Err(Error::DecompressionLimitExceeded { limit: 1 })
+        ));
+    }
+
+    #[cfg(feature = "snappy")]
+    #[test]
+    fn test_from_record_set_slice_snappy_respects_max_decompressed_bytes() {
+        let batch =
+            encode_record_batch(&[(None, Some(b"hello".as_slice()))], Compression::SNAPPY).unwrap();
+
+        let msg_set =
+            MessageSet::from_record_set_slice(&batch, 0, true, DEFAULT_MAX_DECOMPRESSED_BYTES)
+                .unwrap();
+        assert_eq!(msg_set.messages.len(), 1);
+        assert_eq!(msg_set.messages[0].value, b"hello");
+
+        assert!(matches!(
+            MessageSet::from_record_set_slice(&batch, 0, true, 1),
+            Err(Error::DecompressionLimitExceeded { limit: 1 })
+        ));
     }
 
     #[cfg(all(feature = "nightly", kafka_rust_nightly))]
@@ -906,7 +1056,15 @@ mod tests {
             b.bytes = data.len() as u64;
             b.iter(|| {
                 let data = data.clone();
-                let r = black_box(Response::from_vec(data, Some(&reqs), validate_crc).unwrap());
+                let r = black_box(
+                    Response::from_vec(
+                        data,
+                        Some(&reqs),
+                        validate_crc,
+                        DEFAULT_MAX_DECOMPRESSED_BYTES,
+                    )
+                    .unwrap(),
+                );
                 let v = black_box(into_messages(&r));
                 v.len()
             });
