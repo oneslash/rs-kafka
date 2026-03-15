@@ -28,9 +28,17 @@ pub(crate) fn uncompress_limited<T: Read>(src: T, max_output_size: usize) -> Res
         match d.read(&mut chunk) {
             Ok(0) => return Ok(buffer),
             Ok(n) => {
-                let new_len = buffer.len().checked_add(n).ok_or(Error::CodecError)?;
+                let new_len =
+                    buffer
+                        .len()
+                        .checked_add(n)
+                        .ok_or(Error::DecompressionLimitExceeded {
+                            limit: max_output_size,
+                        })?;
                 if new_len > max_output_size {
-                    return Err(Error::CodecError);
+                    return Err(Error::DecompressionLimitExceeded {
+                        limit: max_output_size,
+                    });
                 }
                 buffer.extend_from_slice(&chunk[..n]);
             }
@@ -68,6 +76,6 @@ fn test_uncompress_limited_rejects_oversized_output() {
     let compressed = compress(&payload).unwrap();
     assert!(matches!(
         uncompress_limited(Cursor::new(compressed), 1024),
-        Err(Error::CodecError)
+        Err(Error::DecompressionLimitExceeded { limit: 1024 })
     ));
 }

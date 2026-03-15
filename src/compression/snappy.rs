@@ -38,18 +38,30 @@ fn uncompress_to_limit(src: &[u8], dst: &mut Vec<u8>, max_output_size: usize) ->
     let min_len = snap::raw::decompress_len(src)?;
     if min_len > 0 {
         let off = dst.len();
-        let max_len = off.checked_add(min_len).ok_or(Error::CodecError)?;
+        let max_len = off
+            .checked_add(min_len)
+            .ok_or(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            })?;
         if max_len > max_output_size {
-            return Err(Error::CodecError);
+            return Err(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            });
         }
         dst.resize(max_len, 0);
         let uncompressed_len = {
             let buf = &mut dst.as_mut_slice()[off..off + min_len];
             snap::raw::Decoder::new().decompress(src, buf)?
         };
-        let final_len = off.checked_add(uncompressed_len).ok_or(Error::CodecError)?;
+        let final_len =
+            off.checked_add(uncompressed_len)
+                .ok_or(Error::DecompressionLimitExceeded {
+                    limit: max_output_size,
+                })?;
         if final_len > max_output_size {
-            return Err(Error::CodecError);
+            return Err(Error::DecompressionLimitExceeded {
+                limit: max_output_size,
+            });
         }
         dst.truncate(final_len);
     }
@@ -265,7 +277,9 @@ mod tests {
     use std::io::Read;
     use std::str;
 
-    use super::{SnappyReader, compress, compress_xerial, uncompress_to, uncompress_xerial_limited};
+    use super::{
+        SnappyReader, compress, compress_xerial, uncompress_to, uncompress_xerial_limited,
+    };
     use crate::error::{Error, Result};
 
     fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
@@ -333,8 +347,8 @@ mod tests {
     #[test]
     fn test_snappy_reader_truncated_chunk_returns_error() {
         let malformed = [
-            0x82, b'S', b'N', b'A', b'P', b'P', b'Y', 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 8, 1,
-            2, 3, 4,
+            0x82, b'S', b'N', b'A', b'P', b'P', b'Y', 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 8, 1, 2,
+            3, 4,
         ];
 
         let mut reader = SnappyReader::new(&malformed).unwrap();
@@ -352,7 +366,7 @@ mod tests {
         let compressed = compress_xerial(&payload).unwrap();
         assert!(matches!(
             uncompress_xerial_limited(&compressed, 1024),
-            Err(Error::CodecError)
+            Err(Error::DecompressionLimitExceeded { limit: 1024 })
         ));
     }
 }
