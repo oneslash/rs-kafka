@@ -24,7 +24,7 @@ expect the version number to grow quickly).
 
 ```toml
 [dependencies]
-kafkang = "0.1.0"
+kafkang = "0.3.0"
 ```
 
 To build **kafkang** the usual `cargo build` should suffice. The crate
@@ -155,4 +155,4 @@ for more information.
 
 - [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) is an emerging alternative Kafka client library for Rust based on
   `librdkafka`. rust-rdkafka provides a safe Rust interface to librdkafka.
-- [kafkang](https://github.com/kafka-rust/kafka-rust) - This fork’s repository (original code based on kafka-rust).
+- [kafka-rust](https://github.com/kafka-rust/kafka-rust) - This fork’s repository (original code based on kafka-rust).
