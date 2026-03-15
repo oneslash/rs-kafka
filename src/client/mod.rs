@@ -840,7 +840,7 @@ impl KafkaClient {
     #[inline]
     pub fn load_metadata<T: AsRef<str>>(&mut self, topics: &[T]) -> Result<()> {
         let resp = self.fetch_metadata(topics)?;
-        self.state.update_metadata(resp);
+        self.state.update_metadata(resp)?;
         Ok(())
     }
 
@@ -1768,8 +1768,8 @@ fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) ->
 }
 
 fn __get_response<T: FromByte>(conn: &mut network::KafkaConnection) -> Result<T::R> {
-    let size = __get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(size as u64)?;
+    let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
+    let resp = conn.read_exact_alloc(size)?;
 
     trace!("__get_response: received bytes: {:?}", &resp);
 
@@ -1810,8 +1810,8 @@ fn __z_get_response<P>(conn: &mut network::KafkaConnection, parser: &P) -> Resul
 where
     P: ResponseParser,
 {
-    let size = __get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(size as u64)?;
+    let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
+    let resp = conn.read_exact_alloc(size)?;
 
     // {
     //     use std::fs::OpenOptions;

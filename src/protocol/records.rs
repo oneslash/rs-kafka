@@ -10,8 +10,6 @@ use crate::compression::Compression;
 use crate::compression::gzip;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy;
-#[cfg(feature = "snappy")]
-use crate::compression::snappy::SnappyReader;
 use crate::error::{Error, KafkaCode, Result};
 
 const RECORD_BATCH_MAGIC: i8 = 2;
@@ -355,7 +353,9 @@ pub(crate) fn decompress_record_set(record_set: &[u8], validate_crc: bool) -> Re
             .read_i32::<BigEndian>()
             .map_err(|_| Error::UnexpectedEOF)?; // records_count
 
+        #[cfg(any(feature = "gzip", feature = "snappy"))]
         let records_start = br.position() as usize;
+        #[cfg(any(feature = "gzip", feature = "snappy"))]
         let records_bytes = &batch_bytes[records_start..];
 
         if validate_crc {
@@ -372,31 +372,40 @@ pub(crate) fn decompress_record_set(record_set: &[u8], validate_crc: bool) -> Re
             continue;
         }
 
-        let records = match compression {
-            #[cfg(feature = "gzip")]
-            1 => gzip::uncompress(Cursor::new(records_bytes))?,
-            #[cfg(feature = "snappy")]
-            2 => {
-                let mut v = Vec::new();
-                SnappyReader::new(records_bytes)?.read_to_end(&mut v)?;
-                v
-            }
-            _ => return Err(Error::UnsupportedCompression),
-        };
+        #[cfg(any(feature = "gzip", feature = "snappy"))]
+        {
+            let records: Vec<u8> = match compression {
+                #[cfg(feature = "gzip")]
+                1 => gzip::uncompress_limited(
+                    Cursor::new(records_bytes),
+                    crate::MAX_DECOMPRESSED_BYTES,
+                )?,
+                #[cfg(feature = "snappy")]
+                2 => {
+                    snappy::uncompress_xerial_limited(records_bytes, crate::MAX_DECOMPRESSED_BYTES)?
+                }
+                _ => return Err(Error::UnsupportedCompression),
+            };
 
-        let mut new_batch = Vec::with_capacity(records_start + records.len());
-        new_batch.extend_from_slice(&batch_bytes[..records_start]);
-        let new_attributes = attributes & !0x07;
-        new_batch[attrs_pos..attrs_pos + 2].copy_from_slice(&new_attributes.to_be_bytes());
-        new_batch.extend_from_slice(&records);
+            let mut new_batch = Vec::with_capacity(records_start + records.len());
+            new_batch.extend_from_slice(&batch_bytes[..records_start]);
+            let new_attributes = attributes & !0x07;
+            new_batch[attrs_pos..attrs_pos + 2].copy_from_slice(&new_attributes.to_be_bytes());
+            new_batch.extend_from_slice(&records);
 
-        let crc_calc = crc32c(&new_batch[attrs_pos..]) as i32;
-        new_batch[5..9].copy_from_slice(&crc_calc.to_be_bytes());
+            let crc_calc = crc32c(&new_batch[attrs_pos..]) as i32;
+            new_batch[5..9].copy_from_slice(&crc_calc.to_be_bytes());
 
-        base_offset.encode(&mut out)?;
-        let new_batch_length = i32::try_from(new_batch.len()).map_err(|_| Error::CodecError)?;
-        new_batch_length.encode(&mut out)?;
-        out.extend_from_slice(&new_batch);
+            base_offset.encode(&mut out)?;
+            let new_batch_length =
+                i32::try_from(new_batch.len()).map_err(|_| Error::CodecError)?;
+            new_batch_length.encode(&mut out)?;
+            out.extend_from_slice(&new_batch);
+            continue;
+        }
+
+        #[cfg(not(any(feature = "gzip", feature = "snappy")))]
+        return Err(Error::UnsupportedCompression);
     }
 
     Ok(out)
@@ -596,10 +605,9 @@ pub fn decode_uncompressed_record_set(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        decode_uncompressed_record_set, decompress_record_set, encode_record_batch,
-        record_set_has_compressed_batches,
-    };
+    use super::{decode_uncompressed_record_set, encode_record_batch};
+    #[cfg(any(feature = "gzip", feature = "snappy"))]
+    use super::{decompress_record_set, record_set_has_compressed_batches};
     use crate::compression::Compression;
 
     #[test]

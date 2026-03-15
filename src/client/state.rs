@@ -2,6 +2,7 @@ use std::collections::hash_map::{Entry, HashMap, Keys};
 use std::convert::AsRef;
 use std::slice;
 
+use crate::error::{Error, Result};
 use crate::protocol;
 
 #[derive(Debug)]
@@ -268,7 +269,7 @@ impl ClientState {
 
     /// Loads new and updates existing metadata from the given
     /// metadata response.
-    pub fn update_metadata(&mut self, md: protocol::MetadataResponse) {
+    pub fn update_metadata(&mut self, md: protocol::MetadataResponse) -> Result<()> {
         debug!("updating metadata from: {:?}", md);
 
         // ~ register new brokers with self.brokers and obtain an
@@ -302,7 +303,11 @@ impl ClientState {
             };
             // ~ sync the partitions vector with the new information
             for partition in t.partitions {
-                let tp = &mut tps[partition.id as usize];
+                let partition_id = usize::try_from(partition.id).map_err(|_| Error::CodecError)?;
+                if partition_id >= tps.len() {
+                    return Err(Error::CodecError);
+                }
+                let tp = &mut tps[partition_id];
                 if let Some(bref) = brokers.get(&partition.leader) {
                     tp.broker.set(*bref);
                 } else {
@@ -310,7 +315,7 @@ impl ClientState {
                 }
             }
         }
-        // Ok(())
+        Ok(())
     }
 
     /// Updates self.brokers from the given metadata returning an
@@ -660,12 +665,36 @@ mod tests {
     fn test_loading_metadata() {
         let mut state = ClientState::new();
         // Test loading metadata into a new, empty client state.
-        state.update_metadata(metadata_response_initial());
+        state.update_metadata(metadata_response_initial()).unwrap();
         assert_initial_metadata_load(&state);
 
         // Test loading a metadata update into a client state with
         // already some initial metadata loaded.
-        state.update_metadata(metadata_response_update());
+        state.update_metadata(metadata_response_update()).unwrap();
         assert_updated_metadata_load(&state);
+    }
+
+    #[test]
+    fn test_loading_metadata_rejects_negative_partition_id() {
+        let mut state = ClientState::new();
+        let mut md = metadata_response_initial();
+        md.topics[0].partitions[0].id = -1;
+
+        assert!(matches!(
+            state.update_metadata(md),
+            Err(crate::Error::CodecError)
+        ));
+    }
+
+    #[test]
+    fn test_loading_metadata_rejects_out_of_range_partition_id() {
+        let mut state = ClientState::new();
+        let mut md = metadata_response_initial();
+        md.topics[0].partitions[0].id = 99;
+
+        assert!(matches!(
+            state.update_metadata(md),
+            Err(crate::Error::CodecError)
+        ));
     }
 }

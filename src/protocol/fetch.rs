@@ -13,8 +13,6 @@ use crate::codecs::ToByte;
 use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
-#[cfg(feature = "snappy")]
-use crate::compression::snappy::SnappyReader;
 use crate::error::KafkaCode;
 use crate::{Error, Result};
 
@@ -541,14 +539,16 @@ impl<'a> MessageSet<'a> {
                         // XXX handle recursive compression in future
                         #[cfg(feature = "gzip")]
                         c if c == Compression::GZIP as i8 => {
-                            let v = gzip::uncompress(pmsg.value)?;
+                            let v =
+                                gzip::uncompress_limited(pmsg.value, crate::MAX_DECOMPRESSED_BYTES)?;
                             return MessageSet::from_vec(v, req_offset, validate_crc);
                         }
                         #[cfg(feature = "snappy")]
                         c if c == Compression::SNAPPY as i8 => {
-                            use std::io::Read;
-                            let mut v = Vec::new();
-                            SnappyReader::new(pmsg.value)?.read_to_end(&mut v)?;
+                            let v = crate::compression::snappy::uncompress_xerial_limited(
+                                pmsg.value,
+                                crate::MAX_DECOMPRESSED_BYTES,
+                            )?;
                             return MessageSet::from_vec(v, req_offset, validate_crc);
                         }
                         _ => return Err(Error::UnsupportedCompression),
@@ -762,7 +762,7 @@ mod tests {
             false,
         );
         assert!(match r {
-            return Err(Error::UnsupportedCompression) => true,
+            Err(Error::UnsupportedCompression) => true,
             _ => false,
         });
     }
