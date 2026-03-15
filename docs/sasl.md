@@ -34,12 +34,11 @@ cargo run --example example-sasl-plain -- --brokers localhost:9096 --username ka
 From `tests/`:
 
 ```
-./run-all-tests 4.1.0
+./run-all-tests 4.2.0
 ```
 
 To run only the SASL mode:
 
 ```
-SECURES=":sasl_plaintext" ./run-all-tests 4.1.0
+SECURES=":sasl_plaintext" ./run-all-tests 4.2.0
 ```
-
