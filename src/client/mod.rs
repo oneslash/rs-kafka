@@ -1781,7 +1781,7 @@ fn __send_noack<T>(
     host: &str,
     now: Instant,
     req: T,
-) -> Result<usize>
+) -> Result<()>
 where
     T: KafkaRequest,
 {
