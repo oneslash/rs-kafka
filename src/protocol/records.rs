@@ -14,6 +14,18 @@ use crate::error::{Error, KafkaCode, Result};
 
 const RECORD_BATCH_MAGIC: i8 = 2;
 
+/// Fixed prefix that precedes every record batch in a record set: an `i64` base
+/// offset followed by an `i32` batch length (Kafka's `LOG_OVERHEAD`).
+///
+/// A fetched record set may end with a *partial* batch. The broker serves the
+/// partition log sliced at byte boundaries bounded by the requested fetch size
+/// (`partition_max_bytes`), so the trailing batch is routinely truncated. The
+/// protocol requires clients to ignore an incomplete trailing batch rather than
+/// fail the response — mirroring the Java client's `ByteBufferLogInputStream`,
+/// which stops once fewer than `LOG_OVERHEAD` bytes remain or the declared
+/// batch length runs past the buffer.
+const RECORD_BATCH_OVERHEAD: usize = 12;
+
 #[derive(Debug)]
 pub struct RecordMessage<'a> {
     pub offset: i64,
@@ -246,6 +258,10 @@ pub(crate) fn record_set_has_compressed_batches(record_set: &[u8]) -> Result<boo
     let mut r = Cursor::new(record_set);
 
     while (r.position() as usize) < record_set.len() {
+        // Stop at an incomplete trailing batch (see RECORD_BATCH_OVERHEAD).
+        if record_set.len() - (r.position() as usize) < RECORD_BATCH_OVERHEAD {
+            break;
+        }
         let _base_offset = r.read_i64::<BigEndian>().map_err(|e| {
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 Error::UnexpectedEOF
@@ -270,7 +286,8 @@ pub(crate) fn record_set_has_compressed_batches(record_set: &[u8]) -> Result<boo
             .checked_add(batch_length as usize)
             .ok_or(Error::CodecError)?;
         if batch_end > record_set.len() {
-            return Err(Error::UnexpectedEOF);
+            // Truncated trailing batch; ignore it and return what we have.
+            break;
         }
         let batch_bytes = &record_set[batch_start..batch_end];
         r.set_position(batch_end as u64);
@@ -307,6 +324,10 @@ pub(crate) fn decompress_record_set(
     let mut decompressed_len = 0usize;
 
     while (r.position() as usize) < record_set.len() {
+        // Stop at an incomplete trailing batch (see RECORD_BATCH_OVERHEAD).
+        if record_set.len() - (r.position() as usize) < RECORD_BATCH_OVERHEAD {
+            break;
+        }
         let base_offset = r.read_i64::<BigEndian>().map_err(|e| {
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 Error::UnexpectedEOF
@@ -331,7 +352,8 @@ pub(crate) fn decompress_record_set(
             .checked_add(batch_length as usize)
             .ok_or(Error::CodecError)?;
         if batch_end > record_set.len() {
-            return Err(Error::UnexpectedEOF);
+            // Truncated trailing batch; ignore it and return what we have.
+            break;
         }
         let batch_bytes = &record_set[batch_start..batch_end];
         r.set_position(batch_end as u64);
@@ -447,6 +469,10 @@ pub fn decode_uncompressed_record_set(
     let mut out = Vec::new();
 
     while (r.position() as usize) < record_set.len() {
+        // Stop at an incomplete trailing batch (see RECORD_BATCH_OVERHEAD).
+        if record_set.len() - (r.position() as usize) < RECORD_BATCH_OVERHEAD {
+            break;
+        }
         let base_offset = r.read_i64::<BigEndian>().map_err(|e| {
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 Error::UnexpectedEOF
@@ -471,7 +497,8 @@ pub fn decode_uncompressed_record_set(
             .checked_add(batch_length as usize)
             .ok_or(Error::CodecError)?;
         if batch_end > record_set.len() {
-            return Err(Error::UnexpectedEOF);
+            // Truncated trailing batch; ignore it and return what we have.
+            break;
         }
         let batch_bytes = &record_set[batch_start..batch_end];
         r.set_position(batch_end as u64);
@@ -645,6 +672,91 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].offset, 0);
         assert_eq!(msgs[0].value, b"hello");
+    }
+
+    #[test]
+    fn test_decode_uncompressed_tolerates_truncated_trailing_batch() {
+        // Two complete batches concatenated form a valid record set.
+        let first =
+            encode_record_batch(&[(None, Some(b"first".as_slice()))], Compression::NONE).unwrap();
+        let second =
+            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::NONE).unwrap();
+        let mut full = first.clone();
+        full.extend_from_slice(&second);
+
+        // Sanity: the untruncated set decodes both records.
+        let msgs = decode_uncompressed_record_set(&full, 0, true).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].value, b"first");
+        assert_eq!(msgs[1].value, b"second");
+
+        // Cutting bytes off the tail leaves the second batch's 12-byte header
+        // intact but makes its declared length overrun the buffer -- exactly
+        // what the broker produces when it slices the log at the fetch-size
+        // boundary. The complete first batch must still be delivered.
+        let cut_in_body = &full[..full.len() - 3];
+        let msgs = decode_uncompressed_record_set(cut_in_body, 0, true).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].value, b"first");
+
+        // Fewer than a full batch header (12 bytes) of trailing data must also
+        // be ignored rather than reported as a decode error.
+        let mut short_tail = first.clone();
+        short_tail.extend_from_slice(&[0xAA; 5]);
+        let msgs = decode_uncompressed_record_set(&short_tail, 0, true).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].value, b"first");
+    }
+
+    #[cfg(any(feature = "gzip", feature = "snappy"))]
+    #[test]
+    fn test_has_compressed_batches_tolerates_truncated_trailing_batch() {
+        let first =
+            encode_record_batch(&[(None, Some(b"first".as_slice()))], Compression::NONE).unwrap();
+        let second =
+            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::NONE).unwrap();
+        let mut full = first;
+        full.extend_from_slice(&second);
+
+        // A truncated trailing batch must not turn detection into an error.
+        let cut = &full[..full.len() - 3];
+        assert!(!record_set_has_compressed_batches(cut).unwrap());
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn test_decompress_record_set_tolerates_truncation_gzip() {
+        let first =
+            encode_record_batch(&[(None, Some(b"first".as_slice()))], Compression::GZIP).unwrap();
+        let second =
+            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::GZIP).unwrap();
+        let mut full = first;
+        full.extend_from_slice(&second);
+
+        // The complete first batch is decompressed; the truncated tail is
+        // dropped instead of failing the whole record set.
+        let cut = &full[..full.len() - 3];
+        let decompressed = decompress_record_set(cut, true, usize::MAX).unwrap();
+        let msgs = decode_uncompressed_record_set(&decompressed, 0, true).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].value, b"first");
+    }
+
+    #[cfg(feature = "snappy")]
+    #[test]
+    fn test_decompress_record_set_tolerates_truncation_snappy() {
+        let first =
+            encode_record_batch(&[(None, Some(b"first".as_slice()))], Compression::SNAPPY).unwrap();
+        let second =
+            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::SNAPPY).unwrap();
+        let mut full = first;
+        full.extend_from_slice(&second);
+
+        let cut = &full[..full.len() - 3];
+        let decompressed = decompress_record_set(cut, true, usize::MAX).unwrap();
+        let msgs = decode_uncompressed_record_set(&decompressed, 0, true).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].value, b"first");
     }
 
     #[cfg(feature = "gzip")]
