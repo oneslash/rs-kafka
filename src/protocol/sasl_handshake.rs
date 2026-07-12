@@ -34,6 +34,12 @@ impl ToByte for SaslHandshakeRequest<'_> {
     }
 }
 
+impl super::KafkaRequest for SaslHandshakeRequest<'_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 // --------------------------------------------------------------------
 
 #[derive(Default, Debug)]

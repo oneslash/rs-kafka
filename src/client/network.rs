@@ -21,6 +21,7 @@ use crate::error::TlsError;
 
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
+use crate::protocol::KafkaRequest;
 use crate::protocol::{
     ApiVersionsRequest, ApiVersionsResponse, BrokerApiVersions, SaslAuthenticateRequest,
     SaslAuthenticateResponse, SaslHandshakeRequest, SaslHandshakeResponse,
@@ -204,28 +205,45 @@ impl Connections {
         }
     }
 
-    pub fn get_conn_any(&mut self, now: Instant) -> Option<&mut KafkaConnection> {
-        for (host, conn) in &mut self.conns {
-            if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
-                debug!("Idle timeout reached: {:?}", conn.item);
-                let new_conn_id = self.state.next_conn_id();
-                let new_conn = match self.config.new_conn(new_conn_id, host.as_str()) {
-                    Ok(new_conn) => {
-                        let _ = conn.item.shutdown();
-                        new_conn
-                    }
-                    Err(e) => {
-                        warn!("Failed to establish connection to {}: {:?}", host, e);
-                        continue;
-                    }
-                };
-                conn.item = new_conn;
-            }
-            conn.last_checkout = now;
-            let kconn: &mut KafkaConnection = &mut conn.item;
-            return Some(kconn);
+    pub fn with_conn<T, F>(&mut self, host: &str, now: Instant, operation: F) -> Result<T>
+    where
+        F: FnOnce(&mut KafkaConnection) -> Result<T>,
+    {
+        let result = operation(self.get_conn(host, now)?);
+        if result.is_err() {
+            self.invalidate(host);
         }
-        None
+        result
+    }
+
+    pub fn with_conn_any<T, F>(&mut self, now: Instant, operation: F) -> Result<T>
+    where
+        F: FnOnce(&mut KafkaConnection) -> Result<T>,
+    {
+        let hosts: Vec<String> = self.conns.keys().cloned().collect();
+        let mut last_error = None;
+        for host in hosts {
+            let result = match self.get_conn(&host, now) {
+                Ok(conn) => operation(conn),
+                Err(e) => {
+                    warn!("Failed to establish connection to {}: {:?}", host, e);
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+            if result.is_err() {
+                self.invalidate(&host);
+            }
+            return result;
+        }
+        Err(last_error.unwrap_or(Error::NoHostReachable))
+    }
+
+    fn invalidate(&mut self, host: &str) {
+        if let Some(mut conn) = self.conns.remove(host) {
+            debug!("Evicting failed connection: {:?}", conn.item);
+            let _ = conn.item.shutdown();
+        }
     }
 }
 
@@ -399,8 +417,8 @@ impl KafkaConnection {
 
     fn negotiate_api_versions(&mut self, correlation_id: i32, client_id: &str) -> Result<()> {
         let req = ApiVersionsRequest::new(correlation_id, client_id);
-        __send_request(self, req)?;
-        let resp = __get_response::<ApiVersionsResponse>(self)?;
+        let correlation_id = __send_request(self, req)?;
+        let resp = __get_response::<ApiVersionsResponse>(self, correlation_id)?;
         let versions = resp.into_broker_api_versions()?;
         let _ = versions.select_highest_common_version(0, &[8])?; // Produce v8
         let _ = versions.select_highest_common_version(1, &[11])?; // Fetch v11
@@ -429,9 +447,9 @@ impl KafkaConnection {
             SaslConfig::Plain(cfg) => {
                 let mechanism = "PLAIN";
                 let req = SaslHandshakeRequest::new(correlation_seed, client_id, mechanism);
-                __send_request(self, req)?;
+                let correlation_id = __send_request(self, req)?;
 
-                let resp = __get_response::<SaslHandshakeResponse>(self)?;
+                let resp = __get_response::<SaslHandshakeResponse>(self, correlation_id)?;
                 resp.check_error()?;
                 if !resp.enabled_mechanisms.iter().any(|m| m == mechanism) {
                     return Err(Error::Kafka(KafkaCode::UnsupportedSaslMechanism));
@@ -443,9 +461,9 @@ impl KafkaConnection {
                     client_id,
                     token.as_slice(),
                 );
-                __send_request(self, req)?;
+                let correlation_id = __send_request(self, req)?;
 
-                let resp = __get_response::<SaslAuthenticateResponse>(self)?;
+                let resp = __get_response::<SaslAuthenticateResponse>(self, correlation_id)?;
                 if let Err(err) = resp.check_error() {
                     if !resp.error_message.is_empty() {
                         warn!("SASL authentication failed: {}", resp.error_message);
@@ -496,18 +514,21 @@ impl KafkaConnection {
     }
 }
 
-fn __send_request<T: ToByte>(conn: &mut KafkaConnection, request: T) -> Result<()> {
+fn __send_request<T: KafkaRequest>(conn: &mut KafkaConnection, request: T) -> Result<i32> {
+    let correlation_id = request.correlation_id();
     let mut buffer = Vec::with_capacity(4);
     buffer.extend_from_slice(&[0, 0, 0, 0]);
     request.encode(&mut buffer)?;
     let size = buffer.len() as i32 - 4;
     size.encode(&mut &mut buffer[..])?;
-    conn.send(&buffer)
+    conn.send(&buffer)?;
+    Ok(correlation_id)
 }
 
-fn __get_response<T: FromByte>(conn: &mut KafkaConnection) -> Result<T::R> {
+fn __get_response<T: FromByte>(conn: &mut KafkaConnection, correlation_id: i32) -> Result<T::R> {
     let size = crate::protocol::validate_response_frame_size(__get_response_size(conn)?)?;
     let resp = conn.read_exact_alloc(size)?;
+    crate::protocol::validate_response_correlation(&resp, correlation_id)?;
     T::decode_new(&mut Cursor::new(resp))
 }
 
@@ -515,4 +536,109 @@ fn __get_response_size(conn: &mut KafkaConnection) -> Result<i32> {
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     i32::decode_new(&mut Cursor::new(&buf))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    #[cfg(feature = "security")]
+    use super::KafkaStream;
+    use super::{__get_response, Connections, KafkaConnection, Pooled};
+    use crate::error::Error;
+    use crate::protocol::HeaderResponse;
+
+    const HOST: &str = "mock-broker";
+
+    fn connected_streams() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    fn connections_with_stream(stream: TcpStream) -> Connections {
+        let mut connections = Connections::new(
+            "test-client".to_owned(),
+            None,
+            std::time::Duration::from_secs(60),
+        );
+        #[cfg(feature = "security")]
+        let stream = KafkaStream::Plain(stream);
+        let connection = KafkaConnection::from_stream(stream, 0, HOST, None).unwrap();
+        connections.conns.insert(
+            HOST.to_owned(),
+            Pooled::new(std::time::Instant::now(), connection),
+        );
+        connections
+    }
+
+    #[test]
+    fn matching_correlation_keeps_connection_pooled() {
+        let (client, mut server) = connected_streams();
+        let writer = thread::spawn(move || {
+            server.write_all(&4i32.to_be_bytes()).unwrap();
+            server.write_all(&42i32.to_be_bytes()).unwrap();
+        });
+        let mut connections = connections_with_stream(client);
+
+        let response = connections
+            .with_conn(HOST, std::time::Instant::now(), |conn| {
+                __get_response::<HeaderResponse>(conn, 42)
+            })
+            .unwrap();
+
+        writer.join().unwrap();
+        assert_eq!(response.correlation, 42);
+        assert!(connections.conns.contains_key(HOST));
+    }
+
+    #[test]
+    fn correlation_mismatch_evicts_connection() {
+        let (client, mut server) = connected_streams();
+        let writer = thread::spawn(move || {
+            server.write_all(&4i32.to_be_bytes()).unwrap();
+            server.write_all(&7i32.to_be_bytes()).unwrap();
+        });
+        let mut connections = connections_with_stream(client);
+
+        let error = connections
+            .with_conn(HOST, std::time::Instant::now(), |conn| {
+                __get_response::<HeaderResponse>(conn, 42)
+            })
+            .unwrap_err();
+
+        writer.join().unwrap();
+        assert!(matches!(
+            error,
+            Error::CorrelationIdMismatch {
+                expected: 42,
+                actual: 7
+            }
+        ));
+        assert!(!connections.conns.contains_key(HOST));
+    }
+
+    #[test]
+    fn incomplete_response_evicts_connection() {
+        let (client, mut server) = connected_streams();
+        let writer = thread::spawn(move || {
+            server.write_all(&8i32.to_be_bytes()).unwrap();
+            server.write_all(&[0, 0]).unwrap();
+        });
+        let mut connections = connections_with_stream(client);
+
+        let error = connections
+            .with_conn(HOST, std::time::Instant::now(), |conn| {
+                __get_response::<HeaderResponse>(conn, 42)
+            })
+            .unwrap_err();
+
+        writer.join().unwrap();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!connections.conns.contains_key(HOST));
+    }
 }

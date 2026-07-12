@@ -55,6 +55,12 @@ impl<'a, T: AsRef<str> + 'a> ToByte for MetadataRequest<'a, T> {
     }
 }
 
+impl<'a, T: AsRef<str> + 'a> super::KafkaRequest for MetadataRequest<'a, T> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 // --------------------------------------------------------------------
 
 #[derive(Default, Debug)]
