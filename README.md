@@ -64,11 +64,11 @@ in production. See `docs/sasl.md`.
 
 `kafkang` is tested in CI against the following Kafka versions:
 
-- 3.8.1
 - 3.9.1
 - 4.0.1
 - 4.1.0
 - 4.2.0
+- 4.3.1
 
 ## Examples
 

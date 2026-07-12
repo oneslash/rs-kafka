@@ -34,9 +34,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - KAFKA_VER: 3.8.1
-            COMPRESSION: NONE
-            SECURE: ""
           - KAFKA_VER: 3.9.1
             COMPRESSION: NONE
             SECURE: ""
@@ -47,6 +44,9 @@ jobs:
             COMPRESSION: NONE
             SECURE: ""
           - KAFKA_VER: 4.2.0
+            COMPRESSION: NONE
+            SECURE: ""
+          - KAFKA_VER: 4.3.1
             COMPRESSION: NONE
             SECURE: ""
           - KAFKA_VER: 4.2.0
