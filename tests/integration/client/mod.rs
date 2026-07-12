@@ -194,6 +194,90 @@ fn test_produce_fetch_messages() {
     }
 }
 
+/// Regression test for finding **C2** — "short writes treated as complete →
+/// deterministic frame corruption over TLS".
+///
+/// rustls's synchronous `Stream` accepts only a bounded amount of plaintext
+/// (~64 KiB) per `write` call. Before the fix, `KafkaConnection::send` issued a
+/// single `write` and treated it as complete, so any request frame larger than
+/// that cap was silently truncated mid-frame: the broker then blocked waiting
+/// for the rest of the declared frame while the client blocked waiting for a
+/// response, desyncing the connection. `send` now uses `write_all`, which loops
+/// until the whole frame is transmitted.
+///
+/// This exercises the fix end-to-end — it produces a value far larger than the
+/// per-write cap and reads it back byte-for-byte. Incompressible random bytes
+/// keep the on-the-wire frame large even if the cell enables compression.
+/// Gated to the TLS/mTLS cells, where the truncation manifests; the plaintext
+/// socket path does not exhibit the same per-write plaintext cap.
+#[test]
+fn test_produce_fetch_large_frame_over_tls_c2() {
+    use rand::RngCore;
+
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let mode = secure_mode();
+    if mode != "tls" && mode != "mtls" {
+        return;
+    }
+
+    // Comfortably above rustls's ~64 KiB per-write plaintext cap, and well
+    // under the broker's default ~1 MiB `max.message.bytes`.
+    const VALUE_LEN: usize = 256 * 1024;
+    let mut value = vec![0u8; VALUE_LEN];
+    rand::thread_rng().fill_bytes(&mut value);
+
+    let partition = TEST_TOPIC_PARTITIONS[0];
+    let mut client = new_ready_kafka_client();
+
+    // A frame this size needs several rustls `write` calls; the pre-fix
+    // single-`write` path would truncate it and hang until the read timeout.
+    let resp = client
+        .produce_messages(
+            RequiredAcks::All,
+            Duration::from_secs(5),
+            vec![ProduceMessage::new(
+                TEST_TOPIC_NAME,
+                partition,
+                None,
+                Some(&value),
+            )],
+        )
+        .unwrap();
+
+    let offset = resp
+        .iter()
+        .find(|c| c.topic == TEST_TOPIC_NAME)
+        .expect("produce confirm for the test topic")
+        .partition_confirms
+        .iter()
+        .find(|pc| pc.partition == partition)
+        .expect("partition confirm")
+        .offset
+        .expect("large produce should succeed over TLS");
+
+    // The default per-partition fetch cap is 32 KiB — far below our value — so
+    // request enough to bring the whole batch back; otherwise (post-C1) the
+    // truncated trailing batch is silently dropped and nothing is returned.
+    let fetch_resps = client
+        .fetch_messages(vec![
+            FetchPartition::new(TEST_TOPIC_NAME, partition, offset)
+                .with_max_bytes((VALUE_LEN * 2) as i32),
+        ])
+        .unwrap();
+
+    let messages = flatten_fetched_messages(&fetch_resps);
+    assert!(
+        messages
+            .iter()
+            .any(|(t, p, v)| *t == TEST_TOPIC_NAME && *p == partition && *v == value.as_slice()),
+        "the {VALUE_LEN}-byte value must round-trip byte-for-byte over TLS; \
+         fetched {} message(s) with lengths {:?}",
+        messages.len(),
+        messages.iter().map(|(_, _, v)| v.len()).collect::<Vec<_>>(),
+    );
+}
+
 #[test]
 fn test_commit_offset() {
     let _ = tracing_subscriber::fmt::try_init();

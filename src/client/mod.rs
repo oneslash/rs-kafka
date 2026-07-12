@@ -1772,7 +1772,7 @@ fn __send_noack<T, V>(
     host: &str,
     now: Instant,
     req: T,
-) -> Result<usize>
+) -> Result<()>
 where
     T: ToByte,
     V: FromByte,
@@ -1781,7 +1781,7 @@ where
     __send_request(conn, req)
 }
 
-fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) -> Result<usize> {
+fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) -> Result<()> {
     // ~ buffer to receive data to be sent
     let mut buffer = Vec::with_capacity(4);
     // ~ reserve bytes for the actual request size (we'll fill in that later)
