@@ -33,6 +33,12 @@ impl ToByte for SaslAuthenticateRequest<'_> {
     }
 }
 
+impl super::KafkaRequest for SaslAuthenticateRequest<'_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 // --------------------------------------------------------------------
 
 #[derive(Default, Debug)]

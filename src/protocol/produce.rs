@@ -168,6 +168,12 @@ impl ToByte for ProduceRequest<'_, '_> {
     }
 }
 
+impl super::KafkaRequest for ProduceRequest<'_, '_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 impl ToByte for TopicPartitionProduceRequest<'_> {
     // render: TopicName [Partition MessageSetSize MessageSet]
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {

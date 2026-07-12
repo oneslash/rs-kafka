@@ -101,6 +101,12 @@ impl ToByte for ListOffsetsRequest<'_> {
     }
 }
 
+impl super::KafkaRequest for ListOffsetsRequest<'_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 impl ToByte for TopicListOffsetsRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         self.topic.encode(buffer)?;

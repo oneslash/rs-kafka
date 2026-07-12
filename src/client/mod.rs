@@ -29,7 +29,7 @@ pub use self::tls::{SecurityConfig, TlsConnector, TlsConnectorBuilder};
 
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
-use crate::protocol::{self, ResponseParser};
+use crate::protocol::{self, KafkaRequest, ResponseParser};
 
 use crate::client_internals::KafkaClientInternals;
 
@@ -893,23 +893,19 @@ impl KafkaClient {
 
         for host in &self.config.hosts {
             debug!("fetch_metadata: requesting metadata from {}", host);
-            match self.conn_pool.get_conn(host, now) {
-                Ok(conn) => {
-                    let req =
-                        protocol::MetadataRequest::new(correlation, &self.config.client_id, topics);
-                    match __send_request(conn, req) {
-                        Ok(_) => return __get_response::<protocol::MetadataResponse>(conn),
-                        Err(e) => {
-                            debug!(
-                                "fetch_metadata: failed to request metadata from {}: {}",
-                                host, e
-                            );
-                            last_error = Some(e);
-                        }
-                    }
-                }
+            let req = protocol::MetadataRequest::new(correlation, &self.config.client_id, topics);
+            match __send_receive::<_, protocol::MetadataResponse>(
+                &mut self.conn_pool,
+                host,
+                now,
+                req,
+            ) {
+                Ok(response) => return Ok(response),
                 Err(e) => {
-                    debug!("fetch_metadata: failed to connect to {}: {}", host, e);
+                    debug!(
+                        "fetch_metadata: failed to request metadata from {}: {}",
+                        host, e
+                    );
                     last_error = Some(e);
                 }
             }
@@ -1504,12 +1500,12 @@ fn __get_group_coordinator<'a>(
             // been called yet; if there are no connections available we can
             // try connecting to the user specified bootstrap server similar
             // to the way `load_metadata` works.
-            let conn = conn_pool.get_conn_any(now).expect("available connection");
             debug!(
-                "get_group_coordinator: asking for coordinator of '{}' on: {:?}",
-                group, conn
+                "get_group_coordinator: asking for coordinator of '{}'",
+                group
             );
-            let r = __send_receive_conn::<_, protocol::GroupCoordinatorResponse>(conn, &req)?;
+            let r =
+                __send_receive_any::<_, protocol::GroupCoordinatorResponse>(conn_pool, now, &req)?;
             let retry_code = match r.into_result() {
                 Ok(r) => {
                     state.set_group_coordinator(group, &r);
@@ -1730,7 +1726,7 @@ fn __produce_messages(
     let now = Instant::now();
     if no_acks {
         for (host, req) in reqs {
-            __send_noack::<_, protocol::ProduceResponse>(conn_pool, host, now, req)?;
+            __send_noack(conn_pool, host, now, req)?;
         }
         Ok(vec![])
     } else {
@@ -1752,36 +1748,49 @@ fn __send_receive<T, V>(
     req: T,
 ) -> Result<V::R>
 where
-    T: ToByte,
+    T: KafkaRequest,
     V: FromByte,
 {
-    __send_receive_conn::<T, V>(conn_pool.get_conn(host, now)?, req)
+    let (correlation_id, request) = __encode_request(req)?;
+    let response = conn_pool.with_conn(host, now, |conn| {
+        conn.send(&request)?;
+        __get_response(conn, correlation_id)
+    })?;
+    V::decode_new(&mut Cursor::new(response))
 }
 
-fn __send_receive_conn<T, V>(conn: &mut network::KafkaConnection, req: T) -> Result<V::R>
+fn __send_receive_any<T, V>(
+    conn_pool: &mut network::Connections,
+    now: Instant,
+    req: T,
+) -> Result<V::R>
 where
-    T: ToByte,
+    T: KafkaRequest,
     V: FromByte,
 {
-    __send_request(conn, req)?;
-    __get_response::<V>(conn)
+    let (correlation_id, request) = __encode_request(req)?;
+    let response = conn_pool.with_conn_any(now, |conn| {
+        conn.send(&request)?;
+        __get_response(conn, correlation_id)
+    })?;
+    V::decode_new(&mut Cursor::new(response))
 }
 
-fn __send_noack<T, V>(
+fn __send_noack<T>(
     conn_pool: &mut network::Connections,
     host: &str,
     now: Instant,
     req: T,
 ) -> Result<usize>
 where
-    T: ToByte,
-    V: FromByte,
+    T: KafkaRequest,
 {
-    let conn = conn_pool.get_conn(host, now)?;
-    __send_request(conn, req)
+    let (_, request) = __encode_request(req)?;
+    conn_pool.with_conn(host, now, |conn| conn.send(&request))
 }
 
-fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) -> Result<usize> {
+fn __encode_request<T: KafkaRequest>(request: T) -> Result<(i32, Vec<u8>)> {
+    let correlation_id = request.correlation_id();
     // ~ buffer to receive data to be sent
     let mut buffer = Vec::with_capacity(4);
     // ~ reserve bytes for the actual request size (we'll fill in that later)
@@ -1794,31 +1803,16 @@ fn __send_request<T: ToByte>(conn: &mut network::KafkaConnection, request: T) ->
 
     trace!("__send_request: Sending bytes: {:?}", &buffer);
 
-    // ~ send the prepared buffer
-    conn.send(&buffer)
+    Ok((correlation_id, buffer))
 }
 
-fn __get_response<T: FromByte>(conn: &mut network::KafkaConnection) -> Result<T::R> {
+fn __get_response(conn: &mut network::KafkaConnection, correlation_id: i32) -> Result<Vec<u8>> {
     let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
     let resp = conn.read_exact_alloc(size)?;
 
     trace!("__get_response: received bytes: {:?}", &resp);
-
-    // {
-    //     use std::fs::OpenOptions;
-    //     use std::io::Write;
-    //     let mut f = OpenOptions::new()
-    //         .write(true)
-    //         .truncate(true)
-    //         .create(true)
-    //         .open("/tmp/dump.dat")
-    //         .unwrap();
-    //     f.write_all(&resp[..]).unwrap();
-    // }
-    // ::super::protocol::
-    // let thing = ::super::error::KafkaCode::from_protocol(self.error); // KafkaCode::decode_new::<T>(&mut Cursor::new(resp));
-
-    T::decode_new(&mut Cursor::new(resp))
+    protocol::validate_response_correlation(&resp, correlation_id)?;
+    Ok(resp)
 }
 
 fn __z_send_receive<R, P>(
@@ -1829,34 +1823,15 @@ fn __z_send_receive<R, P>(
     parser: &P,
 ) -> Result<P::T>
 where
-    R: ToByte,
+    R: KafkaRequest,
     P: ResponseParser,
 {
-    let conn = conn_pool.get_conn(host, now)?;
-    __send_request(conn, req)?;
-    __z_get_response(conn, parser)
-}
-
-fn __z_get_response<P>(conn: &mut network::KafkaConnection, parser: &P) -> Result<P::T>
-where
-    P: ResponseParser,
-{
-    let size = protocol::validate_response_frame_size(__get_response_size(conn)?)?;
-    let resp = conn.read_exact_alloc(size)?;
-
-    // {
-    //     use std::fs::OpenOptions;
-    //     use std::io::Write;
-    //     let mut f = OpenOptions::new()
-    //         .write(true)
-    //         .truncate(true)
-    //         .create(true)
-    //         .open("/tmp/dump.dat")
-    //         .unwrap();
-    //     f.write_all(&resp[..]).unwrap();
-    // }
-
-    parser.parse(resp)
+    let (correlation_id, request) = __encode_request(req)?;
+    let response = conn_pool.with_conn(host, now, |conn| {
+        conn.send(&request)?;
+        __get_response(conn, correlation_id)
+    })?;
+    parser.parse(response)
 }
 
 fn __get_response_size(conn: &mut network::KafkaConnection) -> Result<i32> {

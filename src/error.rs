@@ -54,6 +54,10 @@ pub enum Error {
     #[error("Encoding/Decoding Error")]
     CodecError,
 
+    /// The broker response does not belong to the request sent on this connection.
+    #[error("Correlation ID mismatch (expected {expected}, received {actual})")]
+    CorrelationIdMismatch { expected: i32, actual: i32 },
+
     /// Failure to decode compressed payload because the decompressed
     /// size exceeds the configured client-side limit.
     #[error("Decompressed payload exceeds configured limit of {limit} bytes")]

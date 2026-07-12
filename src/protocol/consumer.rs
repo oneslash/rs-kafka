@@ -47,6 +47,12 @@ impl ToByte for GroupCoordinatorRequest<'_, '_> {
     }
 }
 
+impl super::KafkaRequest for GroupCoordinatorRequest<'_, '_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct GroupCoordinatorResponse {
     pub header: HeaderResponse,
@@ -170,6 +176,12 @@ impl ToByte for OffsetFetchRequest<'_, '_, '_> {
             self.group.encode(buffer),
             self.topic_partitions.encode(buffer)
         )
+    }
+}
+
+impl super::KafkaRequest for OffsetFetchRequest<'_, '_, '_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
     }
 }
 
@@ -534,6 +546,12 @@ impl ToByte for OffsetCommitRequest<'_, '_> {
                 })
             )
         })
+    }
+}
+
+impl super::KafkaRequest for OffsetCommitRequest<'_, '_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
     }
 }
 

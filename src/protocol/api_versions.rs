@@ -32,6 +32,12 @@ impl ToByte for ApiVersionsRequest<'_> {
     }
 }
 
+impl super::KafkaRequest for ApiVersionsRequest<'_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 // --------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

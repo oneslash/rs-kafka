@@ -69,6 +69,19 @@ pub(crate) fn validate_response_frame_size(size: i32) -> Result<usize> {
     usize::try_from(size).map_err(|_| Error::CodecError)
 }
 
+pub(crate) fn validate_response_correlation(response: &[u8], expected: i32) -> Result<()> {
+    let correlation = response.get(..4).ok_or(Error::UnexpectedEOF)?;
+    let actual = i32::from_be_bytes(
+        correlation
+            .try_into()
+            .expect("a four-byte slice always converts to [u8; 4]"),
+    );
+    if actual != expected {
+        return Err(Error::CorrelationIdMismatch { expected, actual });
+    }
+    Ok(())
+}
+
 // --------------------------------------------------------------------
 
 /// Provides a way to parse the full raw response data into a
@@ -176,6 +189,16 @@ pub struct HeaderRequest<'a> {
     pub client_id: &'a str,
 }
 
+pub(crate) trait KafkaRequest: ToByte {
+    fn correlation_id(&self) -> i32;
+}
+
+impl<T: KafkaRequest + ?Sized> KafkaRequest for &T {
+    fn correlation_id(&self) -> i32 {
+        (*self).correlation_id()
+    }
+}
+
 impl<'a> HeaderRequest<'a> {
     fn new(
         api_key: i16,
@@ -276,4 +299,20 @@ fn test_validate_response_frame_size() {
         validate_response_frame_size(i32::MAX).unwrap(),
         i32::MAX as usize
     );
+}
+
+#[test]
+fn test_validate_response_correlation() {
+    assert!(validate_response_correlation(&42i32.to_be_bytes(), 42).is_ok());
+    assert!(matches!(
+        validate_response_correlation(&7i32.to_be_bytes(), 42),
+        Err(Error::CorrelationIdMismatch {
+            expected: 42,
+            actual: 7
+        })
+    ));
+    assert!(matches!(
+        validate_response_correlation(&[0, 0, 0], 42),
+        Err(Error::UnexpectedEOF)
+    ));
 }

@@ -191,6 +191,12 @@ impl ToByte for FetchRequest<'_, '_> {
     }
 }
 
+impl super::KafkaRequest for FetchRequest<'_, '_> {
+    fn correlation_id(&self) -> i32 {
+        self.header.correlation_id
+    }
+}
+
 impl TopicPartitionFetchRequest {
     fn encode<W: Write>(&self, topic: &str, api_version: i16, buffer: &mut W) -> Result<()> {
         topic.encode(buffer)?;
