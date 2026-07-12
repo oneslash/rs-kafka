@@ -748,7 +748,8 @@ mod tests {
         let first =
             encode_record_batch(&[(None, Some(b"first".as_slice()))], Compression::SNAPPY).unwrap();
         let second =
-            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::SNAPPY).unwrap();
+            encode_record_batch(&[(None, Some(b"second".as_slice()))], Compression::SNAPPY)
+                .unwrap();
         let mut full = first;
         full.extend_from_slice(&second);
 
