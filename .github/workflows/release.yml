@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, matching Cargo.toml package.version"
+        required: true
+        type: string
+      dry_run:
+        description: "Validate the release without publishing, tagging, or creating a GitHub release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.85.0
+          components: rustfmt, clippy
+
+      - name: Validate release inputs
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF_TYPE" != "branch" || ( "$GITHUB_REF_NAME" != "main" && "$GITHUB_REF_NAME" != "master" ) ]]; then
+            echo >&2 "Releases must be run from the main or master branch."
+            exit 1
+          fi
+
+          if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo >&2 "Version must be a valid SemVer value, for example 0.3.1."
+            exit 1
+          fi
+
+          manifest_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [[ "$manifest_version" != "$INPUT_VERSION" ]]; then
+            echo >&2 "Cargo.toml version is $manifest_version, but workflow input was $INPUT_VERSION."
+            exit 1
+          fi
+
+          tag="v$INPUT_VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo >&2 "Tag $tag already exists locally."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo >&2 "Tag $tag already exists on origin."
+            exit 1
+          fi
+
+          echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$INPUT_DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Rust CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_NAME: Rust
+        run: |
+          set -euo pipefail
+
+          conclusion="$(
+            gh run list \
+              --workflow "$WORKFLOW_NAME" \
+              --commit "$GITHUB_SHA" \
+              --branch "$GITHUB_REF_NAME" \
+              --status completed \
+              --limit 1 \
+              --json conclusion \
+              --jq '.[0].conclusion // empty'
+          )"
+
+          if [[ "$conclusion" != "success" ]]; then
+            echo >&2 "The Rust workflow has not passed for $GITHUB_SHA on $GITHUB_REF_NAME."
+            echo >&2 "Found conclusion: ${conclusion:-none}"
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
+
+      - name: Build package
+        run: cargo package
+
+      - name: Publish dry run
+        if: ${{ steps.release.outputs.dry_run == 'true' }}
+        run: cargo publish --dry-run --token "$CARGO_REGISTRY_TOKEN"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish to crates.io
+        if: ${{ steps.release.outputs.dry_run != 'true' }}
+        run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Create and push tag
+        if: ${{ steps.release.outputs.dry_run != 'true' }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        if: ${{ steps.release.outputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
