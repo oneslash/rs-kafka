@@ -357,14 +357,19 @@ impl KafkaConnection {
         crate::Error::Io(err)
     }
 
-    pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
+    pub fn send(&mut self, msg: &[u8]) -> Result<()> {
+        // `Write::write` is permitted to consume fewer bytes than provided, and
+        // rustls's synchronous `Stream` does exactly that for large frames — it
+        // accepts only a bounded amount of plaintext per call. A single `write`
+        // would therefore silently truncate any oversized request frame and
+        // desync the connection. `write_all` loops until the whole frame is sent.
         #[cfg(feature = "security")]
         let r = self
             .stream
-            .write(msg)
+            .write_all(msg)
             .map_err(KafkaConnection::map_tls_io_error);
         #[cfg(not(feature = "security"))]
-        let r = self.stream.write(msg).map_err(From::from);
+        let r = self.stream.write_all(msg).map_err(From::from);
         trace!("Sent {} bytes to: {:?} => {:?}", msg.len(), self, r);
         r
     }
@@ -491,7 +496,7 @@ impl KafkaConnection {
     }
 }
 
-fn __send_request<T: ToByte>(conn: &mut KafkaConnection, request: T) -> Result<usize> {
+fn __send_request<T: ToByte>(conn: &mut KafkaConnection, request: T) -> Result<()> {
     let mut buffer = Vec::with_capacity(4);
     buffer.extend_from_slice(&[0, 0, 0, 0]);
     request.encode(&mut buffer)?;
