@@ -291,9 +291,18 @@ impl Consumer {
         num_partitions_queried: u32,
         resps: Vec<fetch::Response>,
     ) -> Result<MessageSets> {
+        struct FetchStateUpdate {
+            tp: state::TopicPartition,
+            offset: i64,
+            max_bytes: i32,
+            has_messages: bool,
+            retry: bool,
+        }
+
         let single_partition_consumer = self.single_partition_consumer();
+        let default_max_bytes = self.client.fetch_max_bytes_per_partition();
         let mut empty = true;
-        let retry_partitions = &mut self.state.retry_partitions;
+        let mut updates = Vec::new();
 
         for resp in &resps {
             for t in resp.topics() {
@@ -316,33 +325,21 @@ impl Consumer {
                     // certain errors and retry the fetch operation
                     // transparently for the caller.
 
-                    // XXX need to prevent updating fetch_offsets in case we're gonna fail here
                     let data = p.data()?;
 
                     let fetch_state = self
                         .state
                         .fetch_offsets
-                        .get_mut(&tp)
+                        .get(&tp)
                         .expect("non-requested partition");
-                    // ~ book keeping
-                    if let Some(last_msg) = data.messages().last() {
-                        fetch_state.offset = last_msg.offset + 1;
-                        empty = false;
+                    let mut next_offset = fetch_state.offset;
+                    let mut next_max_bytes = fetch_state.max_bytes;
+                    let mut retry = false;
 
-                        // ~ reset the max_bytes again to its usual
-                        // value if we had a retry request and finally
-                        // got some data
-                        if fetch_state.max_bytes != self.client.fetch_max_bytes_per_partition() {
-                            let prev_max_bytes = fetch_state.max_bytes;
-                            fetch_state.max_bytes = self.client.fetch_max_bytes_per_partition();
-                            debug!(
-                                "reset max_bytes for {}:{} from {} to {}",
-                                t.topic(),
-                                tp.partition,
-                                prev_max_bytes,
-                                fetch_state.max_bytes
-                            );
-                        }
+                    if let Some(last_msg) = data.messages().last() {
+                        next_offset = last_msg.offset + 1;
+                        next_max_bytes = default_max_bytes;
+                        empty = false;
                     } else {
                         debug!(
                             "no data received for {}:{} (max_bytes: {} / fetch_offset: {} / \
@@ -365,17 +362,10 @@ impl Consumer {
                                 let prev_max_bytes = fetch_state.max_bytes;
                                 let incr_max_bytes = prev_max_bytes + prev_max_bytes;
                                 if incr_max_bytes > self.config.retry_max_bytes_limit {
-                                    fetch_state.max_bytes = self.config.retry_max_bytes_limit;
+                                    next_max_bytes = self.config.retry_max_bytes_limit;
                                 } else {
-                                    fetch_state.max_bytes = incr_max_bytes;
+                                    next_max_bytes = incr_max_bytes;
                                 }
-                                debug!(
-                                    "increased max_bytes for {}:{} from {} to {}",
-                                    t.topic(),
-                                    tp.partition,
-                                    prev_max_bytes,
-                                    fetch_state.max_bytes
-                                );
                             } else if num_partitions_queried == 1 {
                                 // ~ this was a single partition
                                 // request and we didn't get anything
@@ -391,12 +381,54 @@ impl Consumer {
                             // (this is just a small optimization)
                             if !single_partition_consumer {
                                 // ~ mark this partition for a retry on its own
-                                debug!("rescheduled for retry: {}:{}", t.topic(), tp.partition);
-                                retry_partitions.push_back(tp);
+                                retry = true;
                             }
                         }
                     }
+
+                    updates.push(FetchStateUpdate {
+                        tp,
+                        offset: next_offset,
+                        max_bytes: next_max_bytes,
+                        has_messages: !data.messages().is_empty(),
+                        retry,
+                    });
                 }
+            }
+        }
+
+        // All fallible response processing is complete. Apply the planned
+        // changes together so an error can never advance offsets for records
+        // that are not returned to the caller.
+        let assignments = &self.state.assignments;
+        let fetch_offsets = &mut self.state.fetch_offsets;
+        let retry_partitions = &mut self.state.retry_partitions;
+        for update in updates {
+            let topic = assignments[update.tp.topic_ref].topic();
+            let fetch_state = fetch_offsets
+                .get_mut(&update.tp)
+                .expect("validated partition disappeared");
+            let prev_max_bytes = fetch_state.max_bytes;
+
+            fetch_state.offset = update.offset;
+            fetch_state.max_bytes = update.max_bytes;
+
+            if prev_max_bytes != update.max_bytes {
+                if update.has_messages {
+                    debug!(
+                        "reset max_bytes for {}:{} from {} to {}",
+                        topic, update.tp.partition, prev_max_bytes, update.max_bytes
+                    );
+                } else {
+                    debug!(
+                        "increased max_bytes for {}:{} from {} to {}",
+                        topic, update.tp.partition, prev_max_bytes, update.max_bytes
+                    );
+                }
+            }
+            if update.retry {
+                debug!("rescheduled for retry: {}:{}", topic, update.tp.partition);
+                retry_partitions.push_back(update.tp);
             }
         }
 
@@ -643,5 +675,130 @@ impl<'a> Iterator for MessageSetsIter<'a> {
             // ~ finally we know there's nothing available anymore
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, VecDeque};
+
+    use super::*;
+    use crate::client::DEFAULT_MAX_DECOMPRESSED_BYTES;
+    use crate::codecs::ToByte;
+    use crate::compression::Compression;
+    use crate::protocol::ResponseParser as _;
+    use crate::protocol::records::encode_record_batch;
+
+    const TOPIC: &str = "partial-fetch-error";
+    const INITIAL_FETCH_OFFSET: i64 = 0;
+
+    fn encode_fetch_partition(
+        response: &mut Vec<u8>,
+        partition: i32,
+        error_code: i16,
+        highwatermark_offset: i64,
+        record_set: &[u8],
+    ) {
+        partition.encode(response).unwrap();
+        error_code.encode(response).unwrap();
+        highwatermark_offset.encode(response).unwrap();
+        highwatermark_offset.encode(response).unwrap(); // last_stable_offset
+        INITIAL_FETCH_OFFSET.encode(response).unwrap(); // log_start_offset
+        (0i32).encode(response).unwrap(); // aborted_transactions
+        (-1i32).encode(response).unwrap(); // preferred_read_replica
+        record_set.encode(response).unwrap();
+    }
+
+    fn mixed_success_and_error_response() -> fetch::Response {
+        let mut request = protocol::FetchRequest::new_v11(1, "test", 100, 1, 1024, "");
+        request.add(TOPIC, 0, INITIAL_FETCH_OFFSET, 1024);
+        request.add(TOPIC, 1, INITIAL_FETCH_OFFSET, 1024);
+
+        let record_set =
+            encode_record_batch(&[(None, Some(b"must not be skipped"))], Compression::NONE)
+                .unwrap();
+
+        let mut response = Vec::new();
+        (1i32).encode(&mut response).unwrap(); // correlation_id
+        (0i32).encode(&mut response).unwrap(); // throttle_time_ms
+        (0i16).encode(&mut response).unwrap(); // top-level error_code
+        (0i32).encode(&mut response).unwrap(); // session_id
+        (1i32).encode(&mut response).unwrap(); // topics
+        TOPIC.encode(&mut response).unwrap();
+        (2i32).encode(&mut response).unwrap(); // partitions
+        encode_fetch_partition(&mut response, 0, 0, 1, &record_set);
+        encode_fetch_partition(
+            &mut response,
+            1,
+            KafkaCode::NotLeaderForPartition as i16,
+            0,
+            &[],
+        );
+
+        protocol::fetch::ResponseParser {
+            validate_crc: true,
+            max_decompressed_bytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
+            requests: Some(&request),
+        }
+        .parse(response)
+        .unwrap()
+    }
+
+    fn consumer_for_partial_fetch_test() -> (Consumer, assignment::AssignmentRef) {
+        let assignments = assignment::from_map(HashMap::from([(TOPIC.to_owned(), vec![0, 1])]));
+        let topic_ref = assignments.topic_ref(TOPIC).unwrap();
+        let mut fetch_offsets =
+            HashMap::with_capacity_and_hasher(2, state::PartitionHasher::default());
+        for partition in [0, 1] {
+            fetch_offsets.insert(
+                state::TopicPartition {
+                    topic_ref,
+                    partition,
+                },
+                state::FetchState {
+                    offset: INITIAL_FETCH_OFFSET,
+                    max_bytes: 1024,
+                },
+            );
+        }
+
+        let state = state::State {
+            assignments,
+            fetch_offsets,
+            retry_partitions: VecDeque::new(),
+            consumed_offsets: HashMap::with_hasher(state::PartitionHasher::default()),
+        };
+        let config = config::Config {
+            group: String::new(),
+            fallback_offset: FetchOffset::Earliest,
+            retry_max_bytes_limit: 0,
+        };
+
+        (
+            Consumer {
+                client: KafkaClient::new(Vec::new()),
+                state,
+                config,
+            },
+            topic_ref,
+        )
+    }
+
+    #[test]
+    fn partial_fetch_error_does_not_advance_successful_partition_offset() {
+        let (mut consumer, topic_ref) = consumer_for_partial_fetch_test();
+        let response = mixed_success_and_error_response();
+
+        let result = consumer.process_fetch_responses(2, vec![response]);
+
+        assert!(result.is_err(), "the partition error must fail the poll");
+        let successful_partition = state::TopicPartition {
+            topic_ref,
+            partition: 0,
+        };
+        assert_eq!(
+            consumer.state.fetch_offsets[&successful_partition].offset, INITIAL_FETCH_OFFSET,
+            "a failed poll must not advance an offset for records it never returned"
+        );
     }
 }
